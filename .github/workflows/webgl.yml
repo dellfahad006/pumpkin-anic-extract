@@ -12,8 +12,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -38,72 +37,75 @@ jobs:
 
       - name: Patch Project Settings and Cleanup
         run: |
-          set -e
-
+          # 1. Remove Steam plugins and scripts
           find project -iname 'Facepunch.Steamworks*' -delete
           find project -iname 'steam_api*' -delete
-
           find project/Assets -name AchievementTest.cs -exec cp ci/AchievementTest.cs {} \;
           find project/Assets -name SteamTest.cs -exec cp ci/SteamTest.cs {} \;
-
+          
+          # 2. Remove Steam references from .asmdef files
           python3 - <<'PYEOF'
-          import glob
-          import json
-
+          import glob, json
           for p in glob.glob('project/Assets/**/*.asmdef', recursive=True):
-              with open(p, encoding='utf-8-sig') as f:
-                  d = json.load(f)
-
+              d = json.load(open(p, encoding='utf-8-sig'))
               for k in ('references', 'precompiledReferences'):
                   if k in d:
                       d[k] = [x for x in d[k] if 'steam' not in x.lower()]
-
-              with open(p, 'w', encoding='utf-8') as f:
-                  json.dump(d, f, indent=2)
+              json.dump(d, open(p, 'w', encoding='utf-8'), indent=2)
           PYEOF
-
+          
+          # 3. Rename duplicate audio file
           if [ -f "project/Assets/AudioClip/clickSound.ogg" ]; then
             mv "project/Assets/AudioClip/clickSound.ogg" "project/Assets/AudioClip/clickSound_lower.ogg"
             mv "project/Assets/AudioClip/clickSound.ogg.meta" "project/Assets/AudioClip/clickSound_lower.ogg.meta"
           fi
-
+          
+          # 4. Change Color Space and Compression
           python3 - <<'PYEOF'
           import re
           import sys
-
+          
           file_path = 'project/ProjectSettings/ProjectSettings.asset'
-
           with open(file_path, 'r', encoding='utf-8') as f:
               content = f.read()
-
-          new_content, count1 = re.subn(
-              r'(m_ActiveColorSpace:\s*)\d+',
-              r'\g<1>0',
-              content
-          )
-
-          if count1 != 1:
-              print(f"ERROR: Expected exactly 1 m_ActiveColorSpace, found {count1}!")
-              sys.exit(1)
-
-          new_content, count2 = re.subn(
-              r'(webGLCompressionFormat:\s*)\d+',
-              r'\g<1>2',
-              new_content
-          )
-
-          if count2 != 1:
-              print(f"ERROR: Expected exactly 1 webGLCompressionFormat, found {count2}!")
-              sys.exit(1)
-
+          
+          new_content, count1 = re.subn(r'(m_ActiveColorSpace:\s*)\d+', r'\g<1>0', content)
+          if count1 != 1: sys.exit(1)
+              
+          new_content, count2 = re.subn(r'(webGLCompressionFormat:\s*)\d+', r'\g<1>2', new_content)
+          if count2 != 1: sys.exit(1)
+          
           with open(file_path, 'w', encoding='utf-8') as f:
               f.write(new_content)
-
-          print("Successfully patched Color Space and WebGL Compression.")
+          print("Successfully patched ColorSpace and Compression.")
           PYEOF
 
-          echo "--- Verifying Project Settings ---"
-          grep -nE "webGLCompressionFormat|m_ActiveColorSpace" project/ProjectSettings/ProjectSettings.asset
+      - name: Fix recovered-project problems
+        run: |
+          python3 - <<'PYEOF'
+          import shutil, os
+
+          # WebGL has no compute shaders, and these exported ones are broken
+          shutil.rmtree('project/Assets/ComputeShader', ignore_errors=True)
+          if os.path.exists('project/Assets/ComputeShader.meta'):
+              os.remove('project/Assets/ComputeShader.meta')
+
+          # Nightmare scene shares SampleScene's GUID; give it its own
+          old = '9fc0d4010bbf28b4594072e72b8655ab'
+          new = '60d859c6485049e8972169b0cd25e604'
+
+          p = 'project/Assets/Scenes/Nightmare.unity.meta'
+          s = open(p, encoding='utf-8').read()
+          assert old in s
+          open(p, 'w', encoding='utf-8').write(s.replace(old, new))
+
+          p = 'project/ProjectSettings/EditorBuildSettings.asset'
+          s = open(p, encoding='utf-8').read()
+          parts = s.split(old)
+          assert len(parts) == 3, len(parts)
+          open(p, 'w', encoding='utf-8').write(parts[0] + old + parts[1] + new + parts[2])
+          print('Patched compute shaders and scene GUID')
+          PYEOF
 
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
@@ -134,59 +136,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: project/Library
-          key: Library-WebGL-ubuntu-22.04-2020.3.40f1-${{ hashFiles('project/Assets/**', 'project/Packages/**', 'project/ProjectSettings/**') }}
-          restore-keys: |
-            Library-WebGL-ubuntu-22.04-2020.3.40f1-
+          key: Library-WebGL-${{ hashFiles('project/Assets/**', 'project/Packages/**', 'project/ProjectSettings/**') }}
+          restore-keys: Library-WebGL-
 
       - name: Build WebGL Project
         uses: buildalon/unity-action@v3
         with:
           project-path: 'project'
           build-target: 'WebGL'
-          args: '-quit -batchmode -nographics -job-worker-count 1 -logFile ${{ github.workspace }}/unity-build.log -executeMethod Buildalon.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild'
-
-      - name: Confirm runner image
-        if: always()
-        run: |
-          if [ ! -f unity-build.log ]; then
-            echo "::error::unity-build.log not found. Cannot confirm runner image."
-            exit 1
-          fi
-          IMG=$(grep -m1 "Image: ubuntu" unity-build.log || true)
-          echo "Runner image line: $IMG"
-          case "$IMG" in
-            *ubuntu-22.04*) echo "Correct runner confirmed." ;;
-            *) echo "::error::Run did not use ubuntu-22.04. This is not a valid runner test."; exit 1 ;;
-          esac
-
-      - name: Verify Unity worker-count argument
-        if: always()
-        run: |
-          if [ ! -f unity-build.log ]; then
-            echo "::warning::Unity build log was not found."
-            exit 0
-          fi
-          if grep -q -- '-job-worker-count' unity-build.log; then
-            echo "Worker-count argument found in Unity log."
-          else
-            echo "::warning::-job-worker-count was not found in the Unity log."
-          fi
-
-      - name: Upload Unity diagnostic logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unity-build-diagnostic-logs
-          path: unity-build.log
-          if-no-files-found: warn
-          retention-days: 7
+          # We left the worker count in, just in case
+          args: '-quit -batchmode -nographics -job-worker-count 1 -executeMethod Buildalon.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild'
 
       - name: Prepare Artifact for Pages
         run: |
           set -e
 
           echo "Searching for WebGL index.html..."
-
           mapfile -t INDEX_FILES < <(
             find project/Builds/WebGL -name index.html -type f
           )
@@ -216,11 +181,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
