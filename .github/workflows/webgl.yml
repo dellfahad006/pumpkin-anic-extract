@@ -51,7 +51,7 @@ jobs:
           grep -rIl "Steamworks" project/Assets || echo "no Steamworks references left"
 
       - name: Activate Unity Personal License
-        uses: RageAgainstThePixel/activate-unity-license@v3
+        uses: buildalon/activate-unity-license@v1
         with:
           license: 'Personal'
           username: ${{ secrets.UNITY_USERNAME }}
