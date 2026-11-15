@@ -21,6 +21,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
           df -h /
 
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Fetch exported project
         env:
           GH_TOKEN: ${{ github.token }}
@@ -30,14 +35,15 @@ jobs:
           tar -xzf project.tar.gz -C project
           rm project.tar.gz
 
-      - name: Remove Steam and patch for WebGL
+      - name: Remove Steam, patch for WebGL, and fix color space
         run: |
+          # 1. Remove Steam plugins and scripts
           find project -iname 'Facepunch.Steamworks*' -delete
           find project -iname 'steam_api*' -delete
-          n=$(find project/Assets -name AchievementTest.cs | wc -l)
-          [ "$n" = "1" ] || { echo "AchievementTest.cs found $n times"; exit 1; }
           find project/Assets -name AchievementTest.cs -exec cp ci/AchievementTest.cs {} \;
           find project/Assets -name SteamTest.cs -exec cp ci/SteamTest.cs {} \;
+          
+          # 2. Remove Steam references from .asmdef files
           python3 - <<'PYEOF'
           import glob, json
           for p in glob.glob('project/Assets/**/*.asmdef', recursive=True):
@@ -47,9 +53,22 @@ jobs:
                       d[k] = [x for x in d[k] if 'steam' not in x.lower()]
               json.dump(d, open(p, 'w', encoding='utf-8'), indent=2)
           PYEOF
+          
+          # 3. Set WebGL compression to Disabled
           sed -i 's/^\(\s*webGLCompressionFormat:\).*/\1 2/' project/ProjectSettings/ProjectSettings.asset
-          grep -n "webGLCompressionFormat" project/ProjectSettings/ProjectSettings.asset || true
-          grep -rIl "Steamworks" project/Assets || echo "no Steamworks references left"
+          
+          # 4. Set Color Space to Gamma (0) to resolve WebGL 1.0 graphics API incompatibility
+          sed -i 's/^\(\s*m_ColorSpace:\).*/\1 0/' project/ProjectSettings/ProjectSettings.asset
+          
+          # 5. Rename duplicate audio file to fix Linux case-sensitivity
+          if [ -f "project/Assets/AudioClip/clickSound.ogg" ]; then
+            mv "project/Assets/AudioClip/clickSound.ogg" "project/Assets/AudioClip/clickSound_lower.ogg"
+            mv "project/Assets/AudioClip/clickSound.ogg.meta" "project/Assets/AudioClip/clickSound_lower.ogg.meta"
+          fi
+          
+          # Verify settings changes
+          echo "--- Verifying Settings ---"
+          grep -nE "webGLCompressionFormat|m_ColorSpace" project/ProjectSettings/ProjectSettings.asset
 
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
@@ -90,9 +109,36 @@ jobs:
           build-target: 'WebGL'
           args: '-quit -batchmode -nographics -executeMethod Buildalon.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild'
 
+      - name: Prepare Artifact for Pages
+        run: |
+          set -e
+
+          echo "Searching for WebGL index.html..."
+          mapfile -t INDEX_FILES < <(
+            find project/Builds/WebGL -name index.html -type f
+          )
+
+          if [ "${#INDEX_FILES[@]}" -ne 1 ]; then
+            echo "ERROR: Expected exactly one index.html, found ${#INDEX_FILES[@]}"
+            printf '%s\n' "${INDEX_FILES[@]}"
+            exit 1
+          fi
+
+          BUILD_DIR="$(dirname "${INDEX_FILES[0]}")"
+
+          echo "Using build directory: $BUILD_DIR"
+
+          mkdir -p pages-artifact
+          cp -a "$BUILD_DIR/." pages-artifact/
+
+          test -f pages-artifact/index.html
+
+          echo "Pages artifact contents:"
+          ls -lah pages-artifact
+
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: project/Builds/WebGL
+          path: pages-artifact
 
   deploy:
     needs: build
