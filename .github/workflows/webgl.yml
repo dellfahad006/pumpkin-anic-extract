@@ -35,7 +35,7 @@ jobs:
           tar -xzf project.tar.gz -C project
           rm project.tar.gz
 
-      - name: Remove Steam, patch for WebGL, and fix color space
+      - name: Patch Project Settings and Cleanup
         run: |
           # 1. Remove Steam plugins and scripts
           find project -iname 'Facepunch.Steamworks*' -delete
@@ -54,21 +54,42 @@ jobs:
               json.dump(d, open(p, 'w', encoding='utf-8'), indent=2)
           PYEOF
           
-          # 3. Set WebGL compression to Disabled
-          sed -i 's/^\(\s*webGLCompressionFormat:\).*/\1 2/' project/ProjectSettings/ProjectSettings.asset
-          
-          # 4. Set Color Space to Gamma (0) to resolve WebGL 1.0 graphics API incompatibility
-          sed -i 's/^\(\s*m_ColorSpace:\).*/\1 0/' project/ProjectSettings/ProjectSettings.asset
-          
-          # 5. Rename duplicate audio file to fix Linux case-sensitivity
+          # 3. Rename duplicate audio file
           if [ -f "project/Assets/AudioClip/clickSound.ogg" ]; then
             mv "project/Assets/AudioClip/clickSound.ogg" "project/Assets/AudioClip/clickSound_lower.ogg"
             mv "project/Assets/AudioClip/clickSound.ogg.meta" "project/Assets/AudioClip/clickSound_lower.ogg.meta"
           fi
           
+          # 4. BULLETPROOF FIX: Change Color Space and Compression, strictly checking for exactly 1 match
+          python3 - <<'PYEOF'
+          import re
+          import sys
+          
+          file_path = 'project/ProjectSettings/ProjectSettings.asset'
+          with open(file_path, 'r', encoding='utf-8') as f:
+              content = f.read()
+          
+          # Change Active Color Space to Gamma (0)
+          new_content, count1 = re.subn(r'(m_ActiveColorSpace:\s*)\d+', r'\g<1>0', content)
+          if count1 != 1:
+              print(f"ERROR: Expected exactly 1 m_ActiveColorSpace, found {count1}!")
+              sys.exit(1)
+              
+          # Change Compression to Disabled (2)
+          new_content, count2 = re.subn(r'(webGLCompressionFormat:\s*)\d+', r'\g<1>2', new_content)
+          if count2 != 1:
+              print(f"ERROR: Expected exactly 1 webGLCompressionFormat, found {count2}!")
+              sys.exit(1)
+          
+          with open(file_path, 'w', encoding='utf-8') as f:
+              f.write(new_content)
+          
+          print(f"Successfully patched {count1} ColorSpace setting and {count2} Compression setting.")
+          PYEOF
+          
           # Verify settings changes
           echo "--- Verifying Settings ---"
-          grep -nE "webGLCompressionFormat|m_ColorSpace" project/ProjectSettings/ProjectSettings.asset
+          grep -nE "webGLCompressionFormat|m_ActiveColorSpace" project/ProjectSettings/ProjectSettings.asset
 
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
