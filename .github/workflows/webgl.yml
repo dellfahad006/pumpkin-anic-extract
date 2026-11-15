@@ -1,0 +1,81 @@
+name: Build WebGL
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Fetch exported project
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1 -p project.tar.gz
+          mkdir project
+          tar -xzf project.tar.gz -C project
+          rm project.tar.gz
+
+      - name: Remove Steam and patch for WebGL
+        run: |
+          find project -iname 'Facepunch.Steamworks*' -delete
+          find project -iname 'steam_api*' -delete
+          n=$(find project/Assets -name AchievementTest.cs | wc -l)
+          [ "$n" = "1" ] || { echo "AchievementTest.cs found $n times"; exit 1; }
+          find project/Assets -name AchievementTest.cs -exec cp ci/AchievementTest.cs {} \;
+          find project/Assets -name SteamTest.cs -exec cp ci/SteamTest.cs {} \;
+          python3 - <<'PYEOF'
+          import glob, json
+          for p in glob.glob('project/Assets/**/*.asmdef', recursive=True):
+              d = json.load(open(p, encoding='utf-8-sig'))
+              for k in ('references', 'precompiledReferences'):
+                  if k in d:
+                      d[k] = [x for x in d[k] if 'steam' not in x.lower()]
+              json.dump(d, open(p, 'w', encoding='utf-8'), indent=2)
+          PYEOF
+          sed -i 's/^\(\s*webGLCompressionFormat:\).*/\1 2/' project/ProjectSettings/ProjectSettings.asset
+          grep -n "webGLCompressionFormat" project/ProjectSettings/ProjectSettings.asset || true
+          grep -rIl "Steamworks" project/Assets || echo "no Steamworks references left"
+
+      - uses: actions/cache@v4
+        with:
+          path: project/Library
+          key: Library-WebGL-${{ hashFiles('project/Assets/**', 'project/Packages/**', 'project/ProjectSettings/**') }}
+          restore-keys: Library-WebGL-
+
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: project
+          unityVersion: 2020.3.40f1
+          targetPlatform: WebGL
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/WebGL/WebGL
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

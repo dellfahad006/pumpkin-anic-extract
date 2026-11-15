@@ -1,0 +1,6 @@
+ar/
+game/
+out/
+*.zip
+*.tar.gz
+*.tar.xz
