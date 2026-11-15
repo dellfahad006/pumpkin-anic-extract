@@ -55,10 +55,12 @@ jobs:
         run: sudo rm -rf /home/packer
 
       - name: Setup Unity Editor
-        uses: buildalon/unity-setup@v2
+        uses: buildalon/unity-setup@v3
         with:
-          unity-version: '2020.3.40f1'
+          version-file: 'project/ProjectSettings/ProjectVersion.txt'
+          unity-version: '2020.3.40f1 (ba48d4efcef1)'
           build-targets: 'WebGL'
+          allow-security-alert: true
           cache-installation: true
 
       - name: Activate Unity Personal License
