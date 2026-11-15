@@ -130,6 +130,169 @@ jobs:
           sed -i 's/^\(\s*webGLTemplate:\).*$/\1 APPLICATION:Default/' project/ProjectSettings/ProjectSettings.asset
           grep -n "webGLTemplate" project/ProjectSettings/ProjectSettings.asset
 
+      - name: Restore real TextMeshPro shaders
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/tmp-pkg
+          cd /tmp/tmp-pkg
+          npm pack com.unity.textmeshpro@3.0.6 --registry https://packages.unity.com
+          tar -xzf com.unity.textmeshpro-3.0.6.tgz
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PYEOF'
+          import glob, re, shutil
+
+          src = '/tmp/tmp-pkg/package/Shaders'
+          dst = 'project/Assets/Shader'
+
+          real = {}
+          for f in glob.glob(src + '/*.shader'):
+              txt = open(f, encoding='utf-8', errors='ignore').read()
+              m = re.search(r'^\s*Shader\s+"([^"]+)"', txt, re.M)
+              if m:
+                  real[m.group(1)] = txt
+          print('Real shaders found in package:', sorted(real))
+
+          for f in glob.glob(src + '/*.cginc'):
+              shutil.copy(f, dst)
+
+          n = 0
+          for f in glob.glob(dst + '/*.shader'):
+              txt = open(f, encoding='utf-8', errors='ignore').read()
+              m = re.search(r'^\s*Shader\s+"([^"]+)"', txt, re.M)
+              if m and m.group(1).startswith('TextMeshPro/') and m.group(1) in real:
+                  open(f, 'w', encoding='utf-8').write(real[m.group(1)])
+                  n += 1
+                  print('Restored', m.group(1))
+          print('Restored', n, 'TextMeshPro shaders')
+          PYEOF
+
+      - name: Write real outline shaders
+        run: |
+          cat > project/Assets/Resources/shaders/outlinemask.shader <<'SHEOF'
+          Shader "Custom/Outline Mask" {
+            Properties {
+              [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest("ZTest", Float) = 0
+            }
+            SubShader {
+              Tags { "Queue" = "Transparent+100" "RenderType" = "Transparent" }
+              Pass {
+                Name "Mask"
+                Cull Off
+                ZTest [_ZTest]
+                ZWrite Off
+                ColorMask 0
+                Stencil {
+                  Ref 1
+                  Pass Replace
+                }
+                CGPROGRAM
+                #include "UnityCG.cginc"
+                #pragma vertex vert
+                #pragma fragment frag
+                struct appdata {
+                  float4 vertex : POSITION;
+                  UNITY_VERTEX_INPUT_INSTANCE_ID
+                };
+                struct v2f {
+                  float4 position : SV_POSITION;
+                  UNITY_VERTEX_OUTPUT_STEREO
+                };
+                v2f vert(appdata input) {
+                  v2f output;
+                  UNITY_SETUP_INSTANCE_ID(input);
+                  UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+                  output.position = UnityObjectToClipPos(input.vertex);
+                  return output;
+                }
+                fixed4 frag(v2f input) : SV_Target {
+                  return fixed4(0, 0, 0, 0);
+                }
+                ENDCG
+              }
+            }
+          }
+          SHEOF
+          cat > project/Assets/Resources/shaders/outlinefill.shader <<'SHEOF'
+          Shader "Custom/Outline Fill" {
+            Properties {
+              [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest("ZTest", Float) = 0
+              _OutlineColor("Outline Color", Color) = (1, 1, 1, 1)
+              _OutlineWidth("Outline Width", Range(0, 10)) = 2
+            }
+            SubShader {
+              Tags { "Queue" = "Transparent+110" "RenderType" = "Transparent" "DisableBatching" = "True" }
+              Pass {
+                Name "Fill"
+                Cull Off
+                ZTest [_ZTest]
+                ZWrite Off
+                Blend SrcAlpha OneMinusSrcAlpha
+                ColorMask RGB
+                Stencil {
+                  Ref 1
+                  Comp NotEqual
+                }
+                CGPROGRAM
+                #include "UnityCG.cginc"
+                #pragma vertex vert
+                #pragma fragment frag
+                struct appdata {
+                  float4 vertex : POSITION;
+                  float3 normal : NORMAL;
+                  float3 smoothNormal : TEXCOORD3;
+                  UNITY_VERTEX_INPUT_INSTANCE_ID
+                };
+                struct v2f {
+                  float4 position : SV_POSITION;
+                  fixed4 color : COLOR;
+                  UNITY_VERTEX_OUTPUT_STEREO
+                };
+                uniform fixed4 _OutlineColor;
+                uniform float _OutlineWidth;
+                v2f vert(appdata input) {
+                  v2f output;
+                  UNITY_SETUP_INSTANCE_ID(input);
+                  UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+                  float3 normal = any(input.smoothNormal) ? input.smoothNormal : input.normal;
+                  float3 viewPosition = UnityObjectToViewPos(input.vertex);
+                  float3 viewNormal = normalize(mul((float3x3)UNITY_MATRIX_IT_MV, normal));
+                  output.position = UnityViewToClipPos(viewPosition + viewNormal * -viewPosition.z * _OutlineWidth / 1000.0);
+                  output.color = _OutlineColor;
+                  return output;
+                }
+                fixed4 frag(v2f input) : SV_Target {
+                  return input.color;
+                }
+                ENDCG
+              }
+            }
+          }
+          SHEOF
+          head -3 project/Assets/Resources/shaders/outlinemask.shader
+
+      - name: Disable broken post-processing layers
+        run: |
+          python3 - <<'PYEOF'
+          import glob, re
+          total = 0
+          paths = glob.glob('project/Assets/Scenes/*.unity') + glob.glob('project/Assets/**/*.prefab', recursive=True)
+          for p in paths:
+              s = open(p, encoding='utf-8', errors='ignore').read()
+              if 'stopNaNPropagation' not in s:
+                  continue
+              parts = re.split(r'(?m)^(?=--- !u!)', s)
+              n = 0
+              for i, d in enumerate(parts):
+                  if d.startswith('--- !u!114') and 'volumeLayer:' in d and 'stopNaNPropagation:' in d:
+                      parts[i] = d.replace('  m_Enabled: 1', '  m_Enabled: 0', 1)
+                      n += 1
+              if n:
+                  open(p, 'w', encoding='utf-8').write(''.join(parts))
+                  total += n
+                  print(p, n)
+          print('Disabled', total, 'PostProcessLayer components')
+          PYEOF
+
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
 
@@ -189,7 +352,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Prepare Artifact for Pages
+      - name: Prepare build folder
         run: |
           set -e
           echo "Searching for WebGL index.html..."
@@ -206,11 +369,17 @@ jobs:
           mkdir -p pages-artifact
           cp -a "$BUILD_DIR/." pages-artifact/
           test -f pages-artifact/index.html
-          echo "Pages artifact contents:"
+          echo "Build contents:"
           ls -lah pages-artifact
           echo "Total size of site:"
           du -sh pages-artifact
-          find pages-artifact -type f -size +90M -exec ls -lh {} \;
+
+      - name: Upload downloadable WebGL build
+        uses: actions/upload-artifact@v4
+        with:
+          name: pumpkin-panic-webgl
+          path: pages-artifact
+          retention-days: 14
 
       - uses: actions/upload-pages-artifact@v3
         with:
