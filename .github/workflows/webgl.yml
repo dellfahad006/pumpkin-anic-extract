@@ -1,3 +1,4 @@
+
 name: Build WebGL (Buildalon)
 
 on:
@@ -13,19 +14,23 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
+      # Free up disk space on the GitHub runner
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
           df -h /
 
+      # Install FFmpeg
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
+      # Download the exported Unity project
       - name: Fetch exported project
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,65 +40,86 @@ jobs:
           tar -xzf project.tar.gz -C project
           rm project.tar.gz
 
+      # Remove Steam dependencies and patch project settings
       - name: Patch Project Settings and Cleanup
         run: |
           # 1. Remove Steam plugins and scripts
           find project -iname 'Facepunch.Steamworks*' -delete
           find project -iname 'steam_api*' -delete
+
           find project/Assets -name AchievementTest.cs -exec cp ci/AchievementTest.cs {} \;
           find project/Assets -name SteamTest.cs -exec cp ci/SteamTest.cs {} \;
-          
-          # 2. Remove Steam references from .asmdef files
+
+          # 2. Remove Steam references from assembly definitions
           python3 - <<'PYEOF'
-          import glob, json
+          import glob
+          import json
+
           for p in glob.glob('project/Assets/**/*.asmdef', recursive=True):
-              d = json.load(open(p, encoding='utf-8-sig'))
+              with open(p, encoding='utf-8-sig') as f:
+                  d = json.load(f)
+
               for k in ('references', 'precompiledReferences'):
                   if k in d:
                       d[k] = [x for x in d[k] if 'steam' not in x.lower()]
-              json.dump(d, open(p, 'w', encoding='utf-8'), indent=2)
+
+              with open(p, 'w', encoding='utf-8') as f:
+                  json.dump(d, f, indent=2)
           PYEOF
-          
+
           # 3. Rename duplicate audio file
           if [ -f "project/Assets/AudioClip/clickSound.ogg" ]; then
             mv "project/Assets/AudioClip/clickSound.ogg" "project/Assets/AudioClip/clickSound_lower.ogg"
             mv "project/Assets/AudioClip/clickSound.ogg.meta" "project/Assets/AudioClip/clickSound_lower.ogg.meta"
           fi
-          
-          # 4. BULLETPROOF FIX: Change Color Space and Compression, strictly checking for exactly 1 match
+
+          # 4. Change Color Space and WebGL Compression
           python3 - <<'PYEOF'
           import re
           import sys
-          
+
           file_path = 'project/ProjectSettings/ProjectSettings.asset'
+
           with open(file_path, 'r', encoding='utf-8') as f:
               content = f.read()
-          
+
           # Change Active Color Space to Gamma (0)
-          new_content, count1 = re.subn(r'(m_ActiveColorSpace:\s*)\d+', r'\g<1>0', content)
+          new_content, count1 = re.subn(
+              r'(m_ActiveColorSpace:\s*)\d+',
+              r'\g<1>0',
+              content
+          )
+
           if count1 != 1:
               print(f"ERROR: Expected exactly 1 m_ActiveColorSpace, found {count1}!")
               sys.exit(1)
-              
-          # Change Compression to Disabled (2)
-          new_content, count2 = re.subn(r'(webGLCompressionFormat:\s*)\d+', r'\g<1>2', new_content)
+
+          # Disable WebGL compression (2)
+          new_content, count2 = re.subn(
+              r'(webGLCompressionFormat:\s*)\d+',
+              r'\g<1>2',
+              new_content
+          )
+
           if count2 != 1:
               print(f"ERROR: Expected exactly 1 webGLCompressionFormat, found {count2}!")
               sys.exit(1)
-          
+
           with open(file_path, 'w', encoding='utf-8') as f:
               f.write(new_content)
-          
+
           print(f"Successfully patched {count1} ColorSpace setting and {count2} Compression setting.")
           PYEOF
-          
-          # Verify settings changes
-          echo "--- Verifying Settings ---"
+
+          # Verify settings
+          echo "--- Verifying Project Settings ---"
           grep -nE "webGLCompressionFormat|m_ActiveColorSpace" project/ProjectSettings/ProjectSettings.asset
 
+      # Fix the /home/packer permission issue
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
 
+      # Install Unity
       - name: Setup Unity Editor
         uses: buildalon/unity-setup@v3
         with:
@@ -103,6 +129,7 @@ jobs:
           allow-security-alert: true
           cache-installation: true
 
+      # Activate Unity Personal license
       - name: Activate Unity Personal License
         uses: buildalon/activate-unity-license@v3
         with:
@@ -110,31 +137,68 @@ jobs:
           username: ${{ secrets.UNITY_USERNAME }}
           password: ${{ secrets.UNITY_PASSWORD }}
 
+      # Install Buildalon build pipeline package
       - name: Add Buildalon Build Pipeline Package
         working-directory: project
         run: |
           npm install -g openupm-cli
           openupm add com.virtualmaker.buildalon
 
+      # Cache Unity Library, separated by Unity version
       - name: Cache Unity Library
         uses: actions/cache@v4
         with:
           path: project/Library
-          key: Library-WebGL-${{ hashFiles('project/Assets/**', 'project/Packages/**', 'project/ProjectSettings/**') }}
-          restore-keys: Library-WebGL-
+          key: Library-WebGL-2020.3.40f1-${{ hashFiles('project/Assets/**', 'project/Packages/**', 'project/ProjectSettings/**') }}
+          restore-keys: |
+            Library-WebGL-2020.3.40f1-
 
+      # Build the WebGL project
       - name: Build WebGL Project
         uses: buildalon/unity-action@v3
         with:
           project-path: 'project'
           build-target: 'WebGL'
-          args: '-quit -batchmode -nographics -executeMethod Buildalon.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild'
+          args: '-quit -batchmode -nographics -job-worker-count 1 -logFile ${{ github.workspace }}/unity-build.log -executeMethod Buildalon.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild'
 
+      # Check whether Unity recorded the worker-count argument
+      - name: Verify Unity worker-count argument
+        if: always()
+        run: |
+          LOG_FILE="${GITHUB_WORKSPACE}/unity-build.log"
+
+          if [ ! -f "$LOG_FILE" ]; then
+            echo "::warning::Unity log file was not found."
+            echo "Check the Build WebGL Project step output."
+            exit 0
+          fi
+
+          echo "--- Checking Unity log ---"
+
+          if grep -q -- '-job-worker-count' "$LOG_FILE"; then
+            echo "Worker-count argument found in Unity log."
+          else
+            echo "::warning::-job-worker-count was not found in the Unity log."
+            echo "Inspect the actual Unity launch command before drawing conclusions."
+          fi
+
+      # Upload the Unity log even if the build fails
+      - name: Upload Unity diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-build-diagnostic-log
+          path: unity-build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Prepare the WebGL output for GitHub Pages
       - name: Prepare Artifact for Pages
         run: |
           set -e
 
           echo "Searching for WebGL index.html..."
+
           mapfile -t INDEX_FILES < <(
             find project/Builds/WebGL -name index.html -type f
           )
@@ -157,16 +221,20 @@ jobs:
           echo "Pages artifact contents:"
           ls -lah pages-artifact
 
+      # Upload the Pages artifact
       - uses: actions/upload-pages-artifact@v3
         with:
           path: pages-artifact
 
+  # Deploy to GitHub Pages
   deploy:
     needs: build
     runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
