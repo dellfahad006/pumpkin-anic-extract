@@ -50,6 +50,13 @@ jobs:
           grep -n "webGLCompressionFormat" project/ProjectSettings/ProjectSettings.asset || true
           grep -rIl "Steamworks" project/Assets || echo "no Steamworks references left"
 
+      - name: Activate Unity Personal License
+        uses: RageAgainstThePixel/activate-unity-license@v3
+        with:
+          license: 'Personal'
+          username: ${{ secrets.UNITY_USERNAME }}
+          password: ${{ secrets.UNITY_PASSWORD }}
+
       - uses: actions/cache@v4
         with:
           path: project/Library
@@ -58,8 +65,7 @@ jobs:
 
       - uses: game-ci/unity-builder@v4
         env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_EMAIL: ${{ secrets.UNITY_USERNAME }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         with:
           projectPath: project
