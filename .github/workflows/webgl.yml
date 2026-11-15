@@ -26,14 +26,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg xvfb
 
-      - name: Fetch exported project
+      - name: Fetch exported project (v2)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v1 -p project.tar.gz
+          # CRITICAL: Downloading v2 to get the 150 fixed .meta files
+          gh release download v2 -p project_v2.tar.gz
           mkdir project
-          tar -xzf project.tar.gz -C project
-          rm project.tar.gz
+          tar -xzf project_v2.tar.gz -C project
+          rm project_v2.tar.gz
 
       - name: Patch Project Settings and Cleanup
         run: |
@@ -85,12 +86,10 @@ jobs:
           python3 - <<'PYEOF'
           import shutil, os
 
-          # WebGL has no compute shaders, and these exported ones are broken
           shutil.rmtree('project/Assets/ComputeShader', ignore_errors=True)
           if os.path.exists('project/Assets/ComputeShader.meta'):
               os.remove('project/Assets/ComputeShader.meta')
 
-          # Nightmare scene shares SampleScene's GUID; give it its own
           old = '9fc0d4010bbf28b4594072e72b8655ab'
           new = '60d859c6485049e8972169b0cd25e604'
 
@@ -366,19 +365,25 @@ jobs:
           fi
           BUILD_DIR="$(dirname "${INDEX_FILES[0]}")"
           echo "Using build directory: $BUILD_DIR"
+          
           mkdir -p pages-artifact
           cp -a "$BUILD_DIR/." pages-artifact/
-          test -f pages-artifact/index.html
+          
+          # Create the downloadable zip for self-hosting
+          cd pages-artifact
+          zip -r "$GITHUB_WORKSPACE/pumpkin-panic-webgl.zip" .
+          cd "$GITHUB_WORKSPACE"
+          
           echo "Build contents:"
           ls -lah pages-artifact
-          echo "Total size of site:"
-          du -sh pages-artifact
+          echo "Created zip file:"
+          ls -lah pumpkin-panic-webgl.zip
 
       - name: Upload downloadable WebGL build
         uses: actions/upload-artifact@v4
         with:
           name: pumpkin-panic-webgl
-          path: pages-artifact
+          path: pumpkin-panic-webgl.zip
           retention-days: 14
 
       - uses: actions/upload-pages-artifact@v3
