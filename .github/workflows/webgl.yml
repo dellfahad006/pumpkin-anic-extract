@@ -107,7 +107,7 @@ jobs:
           print('Patched compute shaders and scene GUID')
           PYEOF
 
-      - name: Shrink textures for WebGL
+      - name: Shrink textures for WebGL (1024px)
         run: |
           python3 - <<'PYEOF'
           import glob, re
@@ -122,8 +122,13 @@ jobs:
               if t != s:
                   open(p, 'w', encoding='utf-8').write(t)
                   n += 1
-          print('Capped texture size on', n, 'files')
+          print('Capped texture size on', n, 'files to 1024px')
           PYEOF
+
+      - name: Set WebGL template
+        run: |
+          sed -i 's/^\(\s*webGLTemplate:\).*$/\1 APPLICATION:Default/' project/ProjectSettings/ProjectSettings.asset
+          grep -n "webGLTemplate" project/ProjectSettings/ProjectSettings.asset
 
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
@@ -203,6 +208,9 @@ jobs:
           test -f pages-artifact/index.html
           echo "Pages artifact contents:"
           ls -lah pages-artifact
+          echo "Total size of site:"
+          du -sh pages-artifact
+          find pages-artifact -type f -size +90M -exec ls -lh {} \;
 
       - uses: actions/upload-pages-artifact@v3
         with:
