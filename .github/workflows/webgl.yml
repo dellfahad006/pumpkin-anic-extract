@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -21,10 +21,10 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
           df -h /
 
-      - name: Install FFmpeg
+      - name: Install FFmpeg and XVFB
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg xvfb
 
       - name: Fetch exported project
         env:
@@ -42,7 +42,7 @@ jobs:
           find project -iname 'steam_api*' -delete
           find project/Assets -name AchievementTest.cs -exec cp ci/AchievementTest.cs {} \;
           find project/Assets -name SteamTest.cs -exec cp ci/SteamTest.cs {} \;
-          
+
           # 2. Remove Steam references from .asmdef files
           python3 - <<'PYEOF'
           import glob, json
@@ -53,28 +53,28 @@ jobs:
                       d[k] = [x for x in d[k] if 'steam' not in x.lower()]
               json.dump(d, open(p, 'w', encoding='utf-8'), indent=2)
           PYEOF
-          
+
           # 3. Rename duplicate audio file
           if [ -f "project/Assets/AudioClip/clickSound.ogg" ]; then
             mv "project/Assets/AudioClip/clickSound.ogg" "project/Assets/AudioClip/clickSound_lower.ogg"
             mv "project/Assets/AudioClip/clickSound.ogg.meta" "project/Assets/AudioClip/clickSound_lower.ogg.meta"
           fi
-          
+
           # 4. Change Color Space and Compression
           python3 - <<'PYEOF'
           import re
           import sys
-          
+
           file_path = 'project/ProjectSettings/ProjectSettings.asset'
           with open(file_path, 'r', encoding='utf-8') as f:
               content = f.read()
-          
+
           new_content, count1 = re.subn(r'(m_ActiveColorSpace:\s*)\d+', r'\g<1>0', content)
           if count1 != 1: sys.exit(1)
-              
+
           new_content, count2 = re.subn(r'(webGLCompressionFormat:\s*)\d+', r'\g<1>2', new_content)
           if count2 != 1: sys.exit(1)
-          
+
           with open(file_path, 'w', encoding='utf-8') as f:
               f.write(new_content)
           print("Successfully patched ColorSpace and Compression.")
@@ -107,6 +107,24 @@ jobs:
           print('Patched compute shaders and scene GUID')
           PYEOF
 
+      - name: Shrink textures for WebGL
+        run: |
+          python3 - <<'PYEOF'
+          import glob, re
+          n = 0
+          for p in glob.glob('project/Assets/**/*.meta', recursive=True):
+              q = p.replace('project/', '', 1)
+              if not (q.startswith('Assets/Texture2D/') or q.startswith('Assets/Sprite/')):
+                  continue
+              s = open(p, encoding='utf-8', errors='ignore').read()
+              t = re.sub(r'(maxTextureSize:\s*)(\d+)',
+                         lambda m: m.group(1) + str(min(int(m.group(2)), 1024)), s)
+              if t != s:
+                  open(p, 'w', encoding='utf-8').write(t)
+                  n += 1
+          print('Capped texture size on', n, 'files')
+          PYEOF
+
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
 
@@ -136,41 +154,53 @@ jobs:
         uses: actions/cache@v4
         with:
           path: project/Library
-          key: Library-WebGL-${{ hashFiles('project/Assets/**', 'project/Packages/**', 'project/ProjectSettings/**') }}
-          restore-keys: Library-WebGL-
+          key: Library-WebGL-ubuntu-22.04-2020.3.40f1-${{ hashFiles('project/Assets/**', 'project/Packages/**', 'project/ProjectSettings/**') }}
+          restore-keys: |
+            Library-WebGL-ubuntu-22.04-2020.3.40f1-
 
       - name: Build WebGL Project
-        uses: buildalon/unity-action@v3
+        run: |
+          mkdir -p project/Builds/Logs
+          xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            /home/runner/Unity/Hub/Editor/2020.3.40f1/Editor/Unity \
+            -projectPath project \
+            -logFile "$GITHUB_WORKSPACE/unity-build.log" \
+            -automated \
+            -buildTarget WebGL \
+            -quit -batchmode \
+            -job-worker-count 1 \
+            -executeMethod Buildalon.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild
+
+      - name: Show end of Unity log if failed
+        if: failure()
+        run: tail -n 120 unity-build.log | cut -c1-300
+
+      - name: Upload Unity diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          project-path: 'project'
-          build-target: 'WebGL'
-          # We left the worker count in, just in case
-          args: '-quit -batchmode -nographics -job-worker-count 1 -executeMethod Buildalon.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild'
+          name: unity-build-diagnostic-logs
+          path: unity-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Prepare Artifact for Pages
         run: |
           set -e
-
           echo "Searching for WebGL index.html..."
           mapfile -t INDEX_FILES < <(
-            find project/Builds/WebGL -name index.html -type f
+            find project/Builds -name index.html -type f
           )
-
           if [ "${#INDEX_FILES[@]}" -ne 1 ]; then
             echo "ERROR: Expected exactly one index.html, found ${#INDEX_FILES[@]}"
             printf '%s\n' "${INDEX_FILES[@]}"
             exit 1
           fi
-
           BUILD_DIR="$(dirname "${INDEX_FILES[0]}")"
-
           echo "Using build directory: $BUILD_DIR"
-
           mkdir -p pages-artifact
           cp -a "$BUILD_DIR/." pages-artifact/
-
           test -f pages-artifact/index.html
-
           echo "Pages artifact contents:"
           ls -lah pages-artifact
 
