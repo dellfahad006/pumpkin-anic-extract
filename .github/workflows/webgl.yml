@@ -26,15 +26,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg xvfb
 
-      - name: Fetch exported project (v2)
+      - name: Fetch exported project
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # CRITICAL: Downloading v2 to get the 150 fixed .meta files
-          gh release download v2 -p project_v2.tar.gz
+          gh release download v1 -p project.tar.gz
           mkdir project
-          tar -xzf project_v2.tar.gz -C project
-          rm project_v2.tar.gz
+          tar -xzf project.tar.gz -C project
+          rm project.tar.gz
 
       - name: Patch Project Settings and Cleanup
         run: |
@@ -86,10 +85,12 @@ jobs:
           python3 - <<'PYEOF'
           import shutil, os
 
+          # WebGL has no compute shaders, and these exported ones are broken
           shutil.rmtree('project/Assets/ComputeShader', ignore_errors=True)
           if os.path.exists('project/Assets/ComputeShader.meta'):
               os.remove('project/Assets/ComputeShader.meta')
 
+          # Nightmare scene shares SampleScene's GUID; give it its own
           old = '9fc0d4010bbf28b4594072e72b8655ab'
           new = '60d859c6485049e8972169b0cd25e604'
 
@@ -106,22 +107,26 @@ jobs:
           print('Patched compute shaders and scene GUID')
           PYEOF
 
-      - name: Shrink textures for WebGL (1024px)
+      - name: Shrink non-sprite textures only
         run: |
           python3 - <<'PYEOF'
           import glob, re
-          n = 0
-          for p in glob.glob('project/Assets/**/*.meta', recursive=True):
-              q = p.replace('project/', '', 1)
-              if not (q.startswith('Assets/Texture2D/') or q.startswith('Assets/Sprite/')):
-                  continue
+          capped = 0
+          skipped = 0
+          for p in glob.glob('project/Assets/Texture2D/*.meta'):
               s = open(p, encoding='utf-8', errors='ignore').read()
+              m = re.search(r'^\s*textureType:\s*(\d+)', s, re.M)
+              # textureType 8 = Sprite. Sprite assets store pixel positions for the
+              # original texture size, so these textures must NOT be resized.
+              if m and m.group(1) == '8':
+                  skipped += 1
+                  continue
               t = re.sub(r'(maxTextureSize:\s*)(\d+)',
-                         lambda m: m.group(1) + str(min(int(m.group(2)), 1024)), s)
+                         lambda x: x.group(1) + str(min(int(x.group(2)), 1024)), s)
               if t != s:
                   open(p, 'w', encoding='utf-8').write(t)
-                  n += 1
-          print('Capped texture size on', n, 'files to 1024px')
+                  capped += 1
+          print('Capped', capped, 'non-sprite textures to 1024px; left', skipped, 'sprite textures at full size')
           PYEOF
 
       - name: Set WebGL template
@@ -129,16 +134,166 @@ jobs:
           sed -i 's/^\(\s*webGLTemplate:\).*$/\1 APPLICATION:Default/' project/ProjectSettings/ProjectSettings.asset
           grep -n "webGLTemplate" project/ProjectSettings/ProjectSettings.asset
 
-      - name: Restore real TextMeshPro shaders
-        continue-on-error: true
+      - name: Restore TextMeshPro shaders
         run: |
           mkdir -p /tmp/tmp-pkg
           cd /tmp/tmp-pkg
-          npm pack com.unity.textmeshpro@3.0.6 --registry https://packages.unity.com
-          tar -xzf com.unity.textmeshpro-3.0.6.tgz
+          npm pack com.unity.textmeshpro@3.0.6 --registry https://packages.unity.com && tar -xzf com.unity.textmeshpro-3.0.6.tgz || echo "npm download failed"
+          if [ ! -d package/Shaders ]; then
+            curl -fsSL -o tmp.tgz https://download.packages.unity.com/com.unity.textmeshpro/-/com.unity.textmeshpro-3.0.6.tgz && tar -xzf tmp.tgz || echo "curl download failed"
+          fi
+          ls package/Shaders 2>/dev/null || echo "NO package/Shaders folder found"
           cd "$GITHUB_WORKSPACE"
           python3 - <<'PYEOF'
-          import glob, re, shutil
+          import glob, os, re, shutil
+
+          SDF_SUBSHADER = r"""
+          SubShader {
+            Tags { "Queue"="Transparent" "IgnoreProjector"="True" "RenderType"="Transparent" }
+            Stencil {
+              Ref [_Stencil]
+              Comp [_StencilComp]
+              Pass [_StencilOp]
+              ReadMask [_StencilReadMask]
+              WriteMask [_StencilWriteMask]
+            }
+            Cull [_CullMode]
+            ZWrite Off
+            Lighting Off
+            Fog { Mode Off }
+            ZTest [unity_GUIZTestMode]
+            Blend One OneMinusSrcAlpha
+            ColorMask [_ColorMask]
+            Pass {
+              CGPROGRAM
+              #pragma vertex VertShader
+              #pragma fragment PixShader
+              #include "UnityCG.cginc"
+              sampler2D _MainTex;
+              half4 _FaceColor;
+              half4 _OutlineColor;
+              float _OutlineWidth;
+              float _FaceDilate;
+              float _WeightNormal;
+              float _WeightBold;
+              float _ScaleRatioA;
+              float _GradientScale;
+              float _ScaleX;
+              float _ScaleY;
+              float _Sharpness;
+              float _VertexOffsetX;
+              float _VertexOffsetY;
+              float _MaskSoftnessX;
+              float _MaskSoftnessY;
+              float4 _ClipRect;
+              struct appdata {
+                float4 vertex : POSITION;
+                float4 color : COLOR;
+                float4 texcoord0 : TEXCOORD0;
+                float2 texcoord1 : TEXCOORD1;
+              };
+              struct v2f {
+                float4 vertex : SV_POSITION;
+                fixed4 color : COLOR;
+                float2 atlas : TEXCOORD0;
+                float4 param : TEXCOORD1;
+                float4 mask : TEXCOORD2;
+              };
+              v2f VertShader(appdata input) {
+                v2f o;
+                float4 vert = input.vertex;
+                vert.x += _VertexOffsetX;
+                vert.y += _VertexOffsetY;
+                float4 vPosition = UnityObjectToClipPos(vert);
+                float2 pixelSize = vPosition.w;
+                pixelSize /= float2(_ScaleX, _ScaleY) * abs(mul((float2x2)UNITY_MATRIX_P, _ScreenParams.xy));
+                float scale = rsqrt(dot(pixelSize, pixelSize));
+                scale *= abs(input.texcoord1.y) * _GradientScale * (_Sharpness + 1);
+                float bold = step(input.texcoord1.y, 0);
+                float weight = lerp(_WeightNormal, _WeightBold, bold) / 4.0;
+                weight = (weight + _FaceDilate) * _ScaleRatioA * 0.5;
+                float4 clampedRect = clamp(_ClipRect, -2e10, 2e10);
+                o.vertex = vPosition;
+                o.color = input.color;
+                o.atlas = input.texcoord0.xy;
+                o.param = float4(scale, 0.5 - weight, 0, 0);
+                o.mask = float4(vert.xy * 2 - clampedRect.xy - clampedRect.zw,
+                                0.25 / (0.25 * float2(_MaskSoftnessX, _MaskSoftnessY) + pixelSize.xy));
+                return o;
+              }
+              fixed4 PixShader(v2f input) : SV_Target {
+                float scale = input.param.x;
+                float edge = input.param.y;
+                float d = tex2D(_MainTex, input.atlas).a;
+                float sd = (d - edge) * scale;
+                float ow = _OutlineWidth * _ScaleRatioA * scale;
+                half faceA = saturate(sd - ow * 0.5 + 0.5);
+                half allA = saturate(sd + ow * 0.5 + 0.5);
+                half4 face = _FaceColor;
+                face.rgb *= input.color.rgb;
+                face.a *= input.color.a;
+                half4 outl = _OutlineColor;
+                outl.a *= input.color.a;
+                half4 c = face;
+                half coverage = faceA;
+                if (_OutlineWidth > 0.0001) {
+                  c = lerp(outl, face, faceA);
+                  coverage = allA;
+                }
+                half4 res;
+                res.a = c.a * coverage;
+                res.rgb = c.rgb * res.a;
+                float2 m = saturate((_ClipRect.zw - _ClipRect.xy - abs(input.mask.xy)) * input.mask.zw);
+                res *= m.x * m.y;
+                return res;
+              }
+              ENDCG
+            }
+          }
+          }
+          """
+
+          SPRITE_SUBSHADER = r"""
+          SubShader {
+            Tags { "Queue"="Transparent" "IgnoreProjector"="True" "RenderType"="Transparent" }
+            Cull Off
+            ZWrite Off
+            Lighting Off
+            Fog { Mode Off }
+            Blend One OneMinusSrcAlpha
+            Pass {
+              CGPROGRAM
+              #pragma vertex vert
+              #pragma fragment frag
+              #include "UnityCG.cginc"
+              sampler2D _MainTex;
+              struct appdata {
+                float4 vertex : POSITION;
+                float4 color : COLOR;
+                float2 uv : TEXCOORD0;
+              };
+              struct v2f {
+                float4 pos : SV_POSITION;
+                fixed4 color : COLOR;
+                float2 uv : TEXCOORD0;
+              };
+              v2f vert(appdata i) {
+                v2f o;
+                o.pos = UnityObjectToClipPos(i.vertex);
+                o.color = i.color;
+                o.uv = i.uv;
+                return o;
+              }
+              fixed4 frag(v2f i) : SV_Target {
+                fixed4 c = tex2D(_MainTex, i.uv) * i.color;
+                c.rgb *= c.a;
+                return c;
+              }
+              ENDCG
+            }
+          }
+          }
+          """
 
           src = '/tmp/tmp-pkg/package/Shaders'
           dst = 'project/Assets/Shader'
@@ -149,20 +304,31 @@ jobs:
               m = re.search(r'^\s*Shader\s+"([^"]+)"', txt, re.M)
               if m:
                   real[m.group(1)] = txt
-          print('Real shaders found in package:', sorted(real))
+          print('Real TextMeshPro shaders available from package:', sorted(real))
 
-          for f in glob.glob(src + '/*.cginc'):
-              shutil.copy(f, dst)
+          if real:
+              for f in glob.glob(src + '/*.cginc'):
+                  shutil.copy(f, dst)
 
-          n = 0
+          n_real = 0
+          n_fallback = 0
           for f in glob.glob(dst + '/*.shader'):
               txt = open(f, encoding='utf-8', errors='ignore').read()
               m = re.search(r'^\s*Shader\s+"([^"]+)"', txt, re.M)
-              if m and m.group(1).startswith('TextMeshPro/') and m.group(1) in real:
-                  open(f, 'w', encoding='utf-8').write(real[m.group(1)])
-                  n += 1
-                  print('Restored', m.group(1))
-          print('Restored', n, 'TextMeshPro shaders')
+              if not m or not m.group(1).startswith('TextMeshPro/'):
+                  continue
+              name = m.group(1)
+              if name in real:
+                  open(f, 'w', encoding='utf-8').write(real[name])
+                  n_real += 1
+                  print('REAL shader restored:', name)
+              else:
+                  head = txt.split('//DummyShaderTextExporter')[0]
+                  body = SPRITE_SUBSHADER if name.endswith('/Sprite') else SDF_SUBSHADER
+                  open(f, 'w', encoding='utf-8').write(head + body)
+                  n_fallback += 1
+                  print('USING FALLBACK shader for:', name)
+          print('TextMeshPro summary: real =', n_real, ' fallback =', n_fallback)
           PYEOF
 
       - name: Write real outline shaders
@@ -292,6 +458,21 @@ jobs:
           print('Disabled', total, 'PostProcessLayer components')
           PYEOF
 
+      - name: Preserve animation and IK assemblies
+        run: |
+          cat > project/Assets/link.xml <<'XMLEOF'
+          <linker>
+            <assembly fullname="Unity.2D.Animation.Runtime" preserve="all"/>
+            <assembly fullname="Unity.2D.IK.Runtime" preserve="all"/>
+            <assembly fullname="Unity.2D.Common.Runtime" preserve="all"/>
+            <assembly fullname="Unity.InternalAPIEngineBridge.001" preserve="all"/>
+            <assembly fullname="Unity.Mathematics" preserve="all"/>
+            <assembly fullname="Unity.TextMeshPro" preserve="all"/>
+            <assembly fullname="Cinemachine" preserve="all"/>
+          </linker>
+          XMLEOF
+          cat project/Assets/link.xml
+
       - name: Fix /home/packer permission bug
         run: sudo rm -rf /home/packer
 
@@ -365,25 +546,20 @@ jobs:
           fi
           BUILD_DIR="$(dirname "${INDEX_FILES[0]}")"
           echo "Using build directory: $BUILD_DIR"
-          
           mkdir -p pages-artifact
           cp -a "$BUILD_DIR/." pages-artifact/
-          
-          # Create the downloadable zip for self-hosting
-          cd pages-artifact
-          zip -r "$GITHUB_WORKSPACE/pumpkin-panic-webgl.zip" .
-          cd "$GITHUB_WORKSPACE"
-          
+          test -f pages-artifact/index.html
           echo "Build contents:"
           ls -lah pages-artifact
-          echo "Created zip file:"
-          ls -lah pumpkin-panic-webgl.zip
+          echo "Total size of site:"
+          du -sh pages-artifact
+          find pages-artifact -type f -size +90M -exec ls -lh {} \;
 
       - name: Upload downloadable WebGL build
         uses: actions/upload-artifact@v4
         with:
           name: pumpkin-panic-webgl
-          path: pumpkin-panic-webgl.zip
+          path: pages-artifact
           retention-days: 14
 
       - uses: actions/upload-pages-artifact@v3
