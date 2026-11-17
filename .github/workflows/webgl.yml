@@ -107,6 +107,90 @@ jobs:
           print('Patched compute shaders and scene GUID')
           PYEOF
 
+      - name: Fix missing click audio and ghoul spawn animator error
+        run: |
+          python3 - <<'PYEOF'
+          import os, re, shutil, sys
+
+          # ---------- 1. Click sounds ----------
+          # AssetRipper exported two clips whose names differ only by letter case
+          # (ClickSound / clickSound). The archive lost the .ogg of one and the .meta of
+          # the other, so every scene reference to them resolved to "null AudioClip".
+          d = 'project/Assets/AudioClip'
+          UP_GUID = 'a99c1a330ea8a494d88004352a371bae'   # used by shop buy / can't-buy sounds
+          LO_GUID = '28ca20cf3e75fec4eb8f56888d1b4cdc'   # used by UI click sounds
+          up, lo = d + '/ClickSound.ogg', d + '/clickSound.ogg'
+          lo_meta, lo2, lo2_meta = lo + '.meta', d + '/clickSound_lower.ogg', d + '/clickSound_lower.ogg.meta'
+
+          META = """fileFormatVersion: 2
+          guid: {guid}
+          licenseType: Free
+          AudioImporter:
+            serializedVersion: 6
+            externalObjects: {{}}
+            defaultSettings:
+              loadType: 0
+              sampleRateSetting: 0
+              sampleRateOverride: 0
+              compressionFormat: 1
+              quality: 0
+              conversionMode: 0
+            platformSettingOverrides: {{}}
+            forceToMono: 0
+            normalize: 0
+            preloadAudioData: 1
+            loadInBackground: 0
+            ambisonic: 0
+            3D: 0
+            userData:
+            assetBundleName:
+            assetBundleVariant:
+          """
+
+          if os.path.isfile(up):
+              # a) capital ClickSound.ogg has no .meta -> restore it with its original GUID
+              if not os.path.exists(up + '.meta'):
+                  open(up + '.meta', 'w').write(META.format(guid=UP_GUID))
+                  print('Restored ClickSound.ogg.meta')
+              # b) the lowercase clip: keep the real file if present, else reuse ClickSound.ogg
+              if os.path.isfile(lo):
+                  shutil.move(lo, lo2)
+                  if os.path.exists(lo_meta): shutil.move(lo_meta, lo2_meta)
+              elif not os.path.exists(lo2):
+                  shutil.copy(up, lo2)
+                  if os.path.exists(lo_meta): shutil.move(lo_meta, lo2_meta)
+              if not os.path.exists(lo2_meta):
+                  open(lo2_meta, 'w').write(META.format(guid=LO_GUID))
+              print('Click sounds repaired')
+          else:
+              print('ClickSound.ogg not found - skipping audio repair')
+
+          # ---------- 2. Ghoul spawn: Animator state that does not exist ----------
+          p = 'project/Assets/Scripts/Assembly-CSharp/loop1.cs'
+          s = open(p, encoding='utf-8').read()
+          if 'SafePlay(' not in s:
+              for old in ('waypoint1.Play("enemyWaypoint1");', 'waypoint2.Play("enemyWaypoint2");'):
+                  assert old in s, old
+              s = s.replace('waypoint1.Play("enemyWaypoint1");', 'SafePlay(waypoint1, "enemyWaypoint1");')
+              s = s.replace('waypoint2.Play("enemyWaypoint2");', 'SafePlay(waypoint2, "enemyWaypoint2");')
+              helper = ('\tprivate static void SafePlay(Animator animator, string stateName)\n'
+                        '\t{\n'
+                        '\t\tif (animator == null) return;\n'
+                        '\t\tif (animator.HasState(0, Animator.StringToHash(stateName)) || animator.HasState(0, Animator.StringToHash("Base Layer." + stateName)))\n'
+                        '\t\t{\n'
+                        '\t\t\tanimator.Play(stateName);\n'
+                        '\t\t}\n'
+                        '\t}\n\n')
+              marker = '\tprivate IEnumerator monsterSpawn()'
+              assert marker in s
+              s = s.replace(marker, helper + marker, 1)
+              open(p, 'w', encoding='utf-8').write(s)
+              print('Patched loop1.cs')
+          PYEOF
+
+      - name: Apply gameplay and performance patches
+        run: python3 ci/patch_game.py project
+
       - name: Shrink non-sprite textures only
         run: |
           python3 - <<'PYEOF'
