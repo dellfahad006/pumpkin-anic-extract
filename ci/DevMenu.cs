@@ -29,6 +29,15 @@ public class DevMenu : MonoBehaviour
 
 	[DllImport("__Internal")]
 	private static extern float DevMenu_JSHeapMB();
+
+	[DllImport("__Internal")]
+	private static extern float DevMenu_CanvasW();
+
+	[DllImport("__Internal")]
+	private static extern float DevMenu_CanvasH();
+
+	[DllImport("__Internal")]
+	private static extern void DevMenu_SetRetro(int on, int cssW, int cssH);
 #else
 	private static float DevMenu_HeapMB()
 	{
@@ -38,6 +47,20 @@ public class DevMenu : MonoBehaviour
 	private static float DevMenu_JSHeapMB()
 	{
 		return 0f;
+	}
+
+	private static float DevMenu_CanvasW()
+	{
+		return 0f;
+	}
+
+	private static float DevMenu_CanvasH()
+	{
+		return 0f;
+	}
+
+	private static void DevMenu_SetRetro(int on, int cssW, int cssH)
+	{
 	}
 #endif
 
@@ -49,6 +72,7 @@ public class DevMenu : MonoBehaviour
 		public Action<bool> apply;
 		public Action rescan;
 		public string result;
+		public bool excludeFromAll;
 	}
 
 	private static DevMenu instance;
@@ -141,7 +165,7 @@ public class DevMenu : MonoBehaviour
 		{
 			for (int i = 0; i < options.Count; i++)
 			{
-				if (options[i] != allOption)
+				if (options[i] != allOption && !options[i].excludeFromAll)
 				{
 					SetOption(options[i], v);
 				}
@@ -337,6 +361,74 @@ public class DevMenu : MonoBehaviour
 				QualitySettings.masterTextureLimit = savedTextureLimit;
 			}
 		});
+
+		retroOption = Add("RETRO pixel mode (renders far fewer pixels)", "Players see: a chunky, pixelated picture (size set below). The browser draws fewer pixels, so it can save GPU work. Not part of 'ALL'.", delegate(bool v)
+		{
+			ApplyRetro(v);
+		});
+		retroOption.excludeFromAll = true;
+	}
+
+	// ---- retro pixel mode ----
+	// Lowers the size of the drawing buffer and tells the browser to enlarge it with hard pixel edges
+	// instead of smoothing. This genuinely reduces GPU work (fill rate), unlike a post-effect filter.
+	private Option retroOption;
+	private int retroFactor = 3;
+	private bool retroActive;
+	private int retroOrigW;
+	private int retroOrigH;
+	private int retroCssW;
+	private int retroCssH;
+
+	private void ApplyRetro(bool on)
+	{
+		if (on)
+		{
+			if (!retroActive)
+			{
+				retroOrigW = Screen.width;
+				retroOrigH = Screen.height;
+				retroCssW = (int)DevMenu_CanvasW();
+				retroCssH = (int)DevMenu_CanvasH();
+				if (retroCssW <= 0 || retroCssH <= 0)
+				{
+					retroCssW = retroOrigW;
+					retroCssH = retroOrigH;
+				}
+			}
+			retroActive = true;
+		}
+		else
+		{
+			retroActive = false;
+		}
+		StartCoroutine(RetroRoutine(on));
+	}
+
+	private IEnumerator RetroRoutine(bool on)
+	{
+		if (on)
+		{
+			int w = Mathf.Max(160, retroOrigW / retroFactor);
+			int h = Mathf.Max(100, retroOrigH / retroFactor);
+			DevMenu_SetRetro(1, retroCssW, retroCssH);
+			Screen.SetResolution(w, h, Screen.fullScreen);
+			// Unity can touch the canvas right after a resolution change, so set our style a few times
+			for (int i = 0; i < 3; i++)
+			{
+				yield return new WaitForSecondsRealtime(0.2f);
+				if (!retroActive)
+				{
+					yield break;
+				}
+				DevMenu_SetRetro(1, retroCssW, retroCssH);
+			}
+		}
+		else
+		{
+			DevMenu_SetRetro(0, 0, 0);
+			Screen.SetResolution(retroOrigW, retroOrigH, Screen.fullScreen);
+		}
 	}
 
 	private void SetOption(Option o, bool value)
@@ -714,18 +806,36 @@ public class DevMenu : MonoBehaviour
 			GUILayout.Label(gcText, noteStyle);
 		}
 
+		GUILayout.BeginHorizontal();
+		GUILayout.Label("Retro pixel size:", GUILayout.Width(110f));
+		for (int f = 2; f <= 4; f++)
+		{
+			if (GUILayout.Button(f + "x" + (retroFactor == f ? "  <" : "")))
+			{
+				retroFactor = f;
+				if (retroOption != null && retroOption.on)
+				{
+					ApplyRetro(true);
+				}
+			}
+		}
+		GUILayout.EndHorizontal();
+		GUILayout.Label("Click an option's name to switch it ON (green) / OFF. It stays that way until you click again. 'Measure' runs a 6 second test, then puts the option back.", noteStyle);
+
 		scroll = GUILayout.BeginScrollView(scroll);
+		Color normalColor = GUI.backgroundColor;
 		for (int i = 0; i < options.Count; i++)
 		{
 			Option o = options[i];
 			GUILayout.BeginHorizontal();
-			bool now = GUILayout.Toggle(o.on, " " + o.name);
-			if (now != o.on)
+			GUI.backgroundColor = o.on ? new Color(0.4f, 1f, 0.4f) : normalColor;
+			if (GUILayout.Button((o.on ? "[ ON ]  " : "[ off ]  ") + o.name))
 			{
-				SetOption(o, now);
+				SetOption(o, !o.on);
 			}
+			GUI.backgroundColor = normalColor;
 			GUI.enabled = !testing;
-			if (GUILayout.Button("Test", GUILayout.Width(50f)))
+			if (GUILayout.Button("Measure", GUILayout.Width(70f)))
 			{
 				StartTest(o);
 			}
