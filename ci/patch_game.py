@@ -510,6 +510,76 @@ import shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(A + '/Plugins/WebGL', exist_ok=True)
 shutil.copy(HERE + '/DevMenu.cs', S + '/DevMenu.cs')
+shutil.copy(HERE + '/FixLab.cs', S + '/FixLab.cs')
 shutil.copy(HERE + '/DevMenu.jslib', A + '/Plugins/WebGL/DevMenu.jslib')
-print('Dev menu installed (press M in the game)')
+print('Dev menu installed (press M), Fix Lab installed (press N)')
+# =====================================================================================
+# 8. Toolbar icons: restore the ORIGINAL per-icon x offsets.
+#    An earlier edit reset all eight icon sprites to x = 0 "to centre them", but the original scene gives
+#    each icon its own offset (-50 ... -77) to sit correctly in its slot, which left the seed bag off-centre.
+#    The values are copied from SampleScene, which still has the originals.
+# =====================================================================================
+ICON_NAMES = ('SeedIconSprite1', 'SeedIconSprite2', 'SeedIconSprite3', 'SeedIconSprite4', 'SeedIconSprite5',
+              'StickSprite', 'FiberSprite', 'IrisCoinSprite')
+
+
+def rect_doc(docs, name):
+    gos = find_gos(docs, name)
+    assert len(gos) == 1, '%s: expected 1 object, found %d' % (name, len(gos))
+    for cid in components_of(gos[0][3]):
+        c = doc_by_id(docs, cid)
+        if c and c[0] == '224':
+            return c
+    raise AssertionError(name + ': no RectTransform')
+
+
+_, orig_docs = split_docs(read(A + '/Scenes/SampleScene.unity'))
+orig_x = {}
+for n in ICON_NAMES:
+    m = re.search(r'\n  m_AnchoredPosition: \{x: ([^,]+),', rect_doc(orig_docs, n)[3])
+    assert m, n
+    orig_x[n] = m.group(1)
+path = A + '/Scenes/Nightmare.unity'
+head, docs = split_docs(read(path))
+for n in ICON_NAMES:
+    rd = rect_doc(docs, n)
+    rd[3], k = re.subn(r'(\n  m_AnchoredPosition: \{x: )[^,]+(,)', r'\g<1>' + orig_x[n] + r'\2', rd[3], count=1)
+    assert k == 1, n
+write(path, join_docs(head, docs))
+print('Toolbar icon offsets restored:', ', '.join('%s=%s' % (n, orig_x[n]) for n in ICON_NAMES))
+# =====================================================================================
+# 9. Skinned characters (player hood, monsters, deer, chains) did not deform in the WebGL build: parts stayed in
+#    their rest pose while the bones moved, so heads looked detached and movement looked stiff / gliding.
+#    All 79 skins use "batched" skinning, which depends on a hidden helper system. Turn it off so every
+#    SpriteSkin deforms itself (the documented non-batched path).
+#    To undo: set SKIN_BATCHING = 1.
+# =====================================================================================
+SKIN_BATCHING = 0
+SKIN_GUID = 'f68e4d9210748575b7313c5ba1460876'
+for scene in ('Nightmare', 'SampleScene', 'MainMenu', 'EndGame'):
+    path = A + '/Scenes/%s.unity' % scene
+    head, docs = split_docs(read(path))
+    n = 0
+    for d in docs:
+        if d[0] == '114' and SKIN_GUID in d[3]:
+            d[3] = set_field(d[3], 'm_UseBatching', str(SKIN_BATCHING), scene + ' skin')
+            n += 1
+    assert n > 0, scene + ': no SpriteSkin found'
+    write(path, join_docs(head, docs))
+    print('%s: %d skinned sprites set to non-batched skinning' % (scene, n))
+
+# =====================================================================================
+# 10. Toolbar frame. The frame art is 1441.85 px wide, but the scene stretches it to 2091. The icon positions,
+#     the 1003-wide stamina bar and the original game's look (bar = 70% of the frame) all assume the natural
+#     width; stretched, the first seed icon lands between slots and the green bar has gaps on both sides.
+#     Slot centres measured from the art match the (restored) icon offsets to within half a screen pixel.
+# =====================================================================================
+for scene in ('Nightmare', 'SampleScene'):
+    path = A + '/Scenes/%s.unity' % scene
+    head, docs = split_docs(read(path))
+    rd = rect_doc(docs, 'GameBarSprite')
+    if '{x: 2091, y: 284}' in rd[3]:
+        rd[3] = sub_once(rd[3], 'm_SizeDelta: {x: 2091, y: 284}', 'm_SizeDelta: {x: 1441.8477, y: 284}', scene + ' toolbar frame')
+        write(path, join_docs(head, docs))
+        print(scene + ': toolbar frame drawn at its natural width')
 print('All patches applied.')

@@ -806,6 +806,7 @@ public class DevMenu : MonoBehaviour
 			GUILayout.Label(gcText, noteStyle);
 		}
 
+
 		GUILayout.BeginHorizontal();
 		GUILayout.Label("Retro pixel size:", GUILayout.Width(110f));
 		for (int f = 2; f <= 4; f++)
