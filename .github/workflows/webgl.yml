@@ -25,6 +25,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg xvfb
+          # Unity 2020.3's WebGL compiler (Emscripten FastComp clang) needs libtinfo.so.5, which this runner image lacks
+          sudo apt-get install -y libtinfo5 || true
+          if [ ! -e /lib/x86_64-linux-gnu/libtinfo.so.5 ] && [ ! -e /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ]; then
+            sudo ln -s /lib/x86_64-linux-gnu/libtinfo.so.6 /lib/x86_64-linux-gnu/libtinfo.so.5
+          fi
+          ls -l /lib/x86_64-linux-gnu/libtinfo.so.5 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 2>/dev/null || true
 
       - name: Fetch exported project
         env:
