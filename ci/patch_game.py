@@ -144,23 +144,32 @@ write(path, join_docs(head, docs))
 print('MainMenu: music removed, mute icon hidden, logo animator disabled')
 
 # =====================================================================================
-# 4. Keyboard: P also pauses / skips the tutorial / closes the shop (Esc still works).
-#    In fullscreen the browser swallows Esc to leave fullscreen, so Esc can never work there.
-#    (Tab is already the Hotbar key, so it is not used.)
+# 4. Keyboard: TAB pauses / skips the tutorial / closes the shop (instead of Esc). The toolbar toggle moves
+#    from Tab to E and becomes an option in the in-game options menu (see ToolbarKeyOption.cs).
+#    (In fullscreen the browser swallows Esc to leave fullscreen, so Esc could never work there.)
 # =====================================================================================
 path = P + '/InputManager.asset'
 text = read(path)
-pat = re.compile(r'(    m_Name: Start\n(?:(?!    m_Name:).*\n)*?    positiveButton: escape\n    altNegativeButton:\n    altPositiveButton:)(\n)')
-if not re.search(r'positiveButton: escape\n    altNegativeButton:\n    altPositiveButton: p\n', text):
-    text, n = pat.subn(r'\1 p\2', text, count=1)
-    assert n == 1, 'Start axis not found in InputManager'
-    write(path, text)
+hot = re.compile(r'(    m_Name: Hotbar\n(?:(?!    m_Name:).*\n)*?    positiveButton: )tab(\n)')
+text, n = hot.subn(r'\g<1>e\2', text, count=1)
+assert n == 1, 'Hotbar axis not found in InputManager'
+start = re.compile(r'(    m_Name: Start\n(?:(?!    m_Name:).*\n)*?    positiveButton: )escape(\n)')
+text, n = start.subn(r'\g<1>tab\2', text, count=1)
+assert n == 1, 'Start axis not found in InputManager'
+write(path, text)
 for scene in ('Nightmare', 'SampleScene'):
     path = A + '/Scenes/%s.unity' % scene
     text = read(path)
-    if 'SKIP TUTORIAL [ESC]' in text:
-        write(path, text.replace('SKIP TUTORIAL [ESC]', 'SKIP TUTORIAL [ESC / P]'))
-print('Input: P added as a second Start/pause key; tutorial hint updated')
+    assert 'SKIP TUTORIAL [ESC]' in text, scene + ': tutorial hint text not found'
+    write(path, text.replace('SKIP TUTORIAL [ESC]', 'SKIP TUTORIAL [TAB]'))
+# the toolbar key can now be switched off in the options menu
+for fname in ('barIcons.cs', 'barIcons2.cs'):
+    p = S + '/' + fname
+    s_ = read(p)
+    old = 'Input.GetButtonDown("Hotbar")'
+    assert s_.count(old) == 1, fname
+    write(p, s_.replace(old, '(Input.GetButtonDown("Hotbar") && ToolbarKeyOption.Enabled)'))
+print('Input: Tab = pause / skip tutorial, E = toolbar (optional); tutorial hint updated')
 
 # =====================================================================================
 # 5. Fullscreen (one click) + working resolution dropdown
@@ -368,12 +377,26 @@ if 'UNITY_WEBGL' not in s:
                  '#if !UNITY_WEBGL || UNITY_EDITOR\n\t\tApplication.targetFrameRate = Screen.currentResolution.refreshRate;\n#endif\n', 'FrameRate')
     write(p, s)
 
-# 6b. New players start on Medium instead of High (saved choices are kept).
+# 6b. Everyone starts on the lowest level ("Optimised"): new players by default, and existing players once
+#     (their saved choice is overwritten a single time, then respected again).
 p = S + '/GraphicSettings.cs'
-s = read(p)
-if 'GetInt("graphicsQuality", 1)' not in s:
-    s = sub_once(s, 'GetInt("graphicsQuality", 2)', 'GetInt("graphicsQuality", 1)', 'GraphicSettings default')
-    write(p, s)
+s_ = read(p)
+old = 'PlayerPrefs.GetInt("graphicsQuality", 2)'
+assert s_.count(old) == 1, 'GraphicSettings default line'
+s_ = s_.replace(old, 'StartQuality()')
+helper = (
+    '\tprivate static int StartQuality()\n'
+    '\t{\n'
+    '\t\tif (!PlayerPrefs.HasKey("graphicsDefaultV2"))\n'
+    '\t\t{\n'
+    '\t\t\tPlayerPrefs.SetInt("graphicsQuality", 0);\n'
+    '\t\t\tPlayerPrefs.SetInt("graphicsDefaultV2", 1);\n'
+    '\t\t\tPlayerPrefs.Save();\n'
+    '\t\t}\n'
+    '\t\treturn PlayerPrefs.GetInt("graphicsQuality", 0);\n'
+    '\t}\n\n')
+s_ = sub_once(s_, '\tprivate void Start()', helper + '\tprivate void Start()', 'GraphicSettings helper')
+write(p, s_)
 
 # 6c. Make the Low / Medium quality levels actually cheaper (shadows, lights).
 p = P + '/QualitySettings.asset'
@@ -394,7 +417,16 @@ for level, key, value in (('Low', 'shadows', 0), ('Low', 'pixelLightCount', 2), 
                           ('Medium', 'shadows', 1), ('Medium', 'shadowResolution', 0),
                           ('Medium', 'shadowDistance', 25), ('Medium', 'pixelLightCount', 4)):
     text = set_in_block(text, level, key, value)
+# rename the levels shown to the player: Low -> Optimised, High -> Max settings
+text = sub_once(text, '    name: Low\n', '    name: Optimised\n', 'quality name Low')
+text = sub_once(text, '    name: High\n', '    name: Max settings\n', 'quality name High')
 write(p, text)
+
+# the options menu overwrites the dropdown labels per language; change the English ones
+p = S + '/LanguageChangerMenu.cs'
+s_ = read(p)
+s_ = sub_once(s_, 'new List<string> { "Low", "Medium", "High" }', 'new List<string> { "Optimised", "Medium", "Max settings" }', 'English quality labels')
+write(p, s_)
 
 # 6d. Cameras render in HDR, but the workflow turns every post-processing layer off, so nothing ever
 #     uses the HDR data. It only costs an extra half-float render target and a full-screen copy.
@@ -511,8 +543,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(A + '/Plugins/WebGL', exist_ok=True)
 shutil.copy(HERE + '/DevMenu.cs', S + '/DevMenu.cs')
 shutil.copy(HERE + '/FixLab.cs', S + '/FixLab.cs')
+shutil.copy(HERE + '/ToolbarKeyOption.cs', S + '/ToolbarKeyOption.cs')
 shutil.copy(HERE + '/DevMenu.jslib', A + '/Plugins/WebGL/DevMenu.jslib')
-print('Dev menu installed (press M), Fix Lab installed (press N)')
+shutil.copy(HERE + '/SoftSkin.cs', S + '/SoftSkin.cs')
+shutil.copy(HERE + '/CheatMenu.cs', S + '/CheatMenu.cs')
+# SoftSkin needs a KNOWN script GUID, because section 9 points the scenes at it.
+SOFTSKIN_GUID = '7d3b5c1e9a4f4c2d8e6a0b1f3c5d7e91'
+write(S + '/SoftSkin.cs.meta',
+      'fileFormatVersion: 2\nguid: ' + SOFTSKIN_GUID + '\nMonoImporter:\n  externalObjects: {}\n  serializedVersion: 2\n'
+      '  defaultReferences: []\n  executionOrder: 0\n  icon: {instanceID: 0}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n')
+print('Dev menu installed (press M), Fix Lab (press N), Cheat menu (press L), SoftSkin script installed')
 # =====================================================================================
 # 8. Toolbar icons: restore the ORIGINAL per-icon x offsets.
 #    An earlier edit reset all eight icon sprites to x = 0 "to centre them", but the original scene gives
@@ -565,8 +605,15 @@ for scene in ('Nightmare', 'SampleScene', 'MainMenu', 'EndGame'):
             d[3] = set_field(d[3], 'm_UseBatching', str(SKIN_BATCHING), scene + ' skin')
             n += 1
     assert n > 0, scene + ': no SpriteSkin found'
-    write(path, join_docs(head, docs))
-    print('%s: %d skinned sprites set to non-batched skinning' % (scene, n))
+    text = join_docs(head, docs)
+    # The original SpriteSkin component does not exist at runtime in the WebGL build (Fix Lab found 0 of them), so
+    # point every one of them at our own SoftSkin script. Field names m_RootBone / m_BoneTransforms are identical.
+    OLD_REF = '{fileID: -972417856, guid: ' + SKIN_GUID + ', type: 3}'
+    NEW_REF = '{fileID: 11500000, guid: ' + SOFTSKIN_GUID + ', type: 3}'
+    assert text.count(OLD_REF) == n, '%s: script reference count %d != skin count %d' % (scene, text.count(OLD_REF), n)
+    text = text.replace(OLD_REF, NEW_REF)
+    write(path, text)
+    print('%s: %d skinned sprites now use SoftSkin' % (scene, n))
 
 # =====================================================================================
 # 10. Toolbar frame. The frame art is 1441.85 px wide, but the scene stretches it to 2091. The icon positions,
