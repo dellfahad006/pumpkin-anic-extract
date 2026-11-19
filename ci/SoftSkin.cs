@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.U2D;
 
 // Replacement for the 2D Animation package's "SpriteSkin" component.
 //
