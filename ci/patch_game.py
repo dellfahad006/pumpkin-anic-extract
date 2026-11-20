@@ -691,4 +691,16 @@ for scene in ('Nightmare', 'SampleScene'):
     if n_:
         write(path, text)
     print('%s: %d deer trigger radii halved' % (scene, n_))
+
+# =====================================================================================
+# 12. Faster repeat visits: WebGL "Data Caching" (the exported project has it switched off).
+#     The ~120 MB .data file is then kept in the browser (IndexedDB) and only re-downloaded when a new build changes it.
+# =====================================================================================
+path = P + '/ProjectSettings.asset'
+text = read(path)
+text, n_ = re.subn(r'(?m)^(  webGLDataCaching: )\d+$', r'\g<1>1', text)
+assert n_ == 1, 'webGLDataCaching setting not found'
+write(path, text)
+print('WebGL data caching enabled')
+
 print('All patches applied.')

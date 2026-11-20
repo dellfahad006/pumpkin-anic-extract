@@ -1,38 +1,86 @@
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.U2D;
 
-// Replacement for the 2D Animation package's "SpriteSkin" component.
+// Replacement for the 2D Animation package's "SpriteSkin" component (which does not run in the WebGL build).
 //
-// WHY: in the WebGL build the original SpriteSkin objects do not exist at runtime (the Fix Lab found 0 of them
-// while the player and the deer were on screen, and the console says "referenced script on PlayerTop is
-// missing"). So hood, monster arms/legs and deer bodies were never deformed: they stayed in their rest pose while
-// the bones (and everything plain that hangs on them, like heads and faces) moved.
+// patch_game.py points every scene's SpriteSkin at THIS script; the serialized fields below keep the original
+// names (m_RootBone, m_BoneTransforms) so the rig data is picked up as is. Every frame (LateUpdate, after the
+// Animator) the sprite's mesh is skinned on the CPU with plain Unity sprite APIs and drawn through a child
+// MeshRenderer; the original SpriteRenderer is only hidden (forceRenderingOff), never disabled.
 //
-// HOW: patch_game.py points every scene's SpriteSkin at THIS script instead. The two serialized fields below
-// have the same names as the original ones, so the rig data (m_RootBone, m_BoneTransforms) is picked up as is.
-// Every frame (LateUpdate, after the Animator) this script skins the sprite's mesh on the CPU with plain
-// Unity sprite APIs and draws it through a child MeshRenderer; the original SpriteRenderer is only hidden
-// (forceRenderingOff), never disabled, so animations that change its sprite / colour / sorting keep working.
-//
-// DRAWING: the copy is a child of the sprite's own object (so it lives inside the character's Sorting Group and
-// keeps the same draw order as the original, e.g. the scared face above the head) and copies the renderer's lighting
-// settings (light probes, reflection probes, shadows), because the sprite material is the LIT "Sprites/Diffuse".
-//
-// If anything about a sprite is unexpected (no bones, bone count mismatch), that one sprite is simply drawn the
-// normal way again. Fix Lab (key N) can switch the whole thing on / off while you look at a character.
+// The static settings below exist for the Look Lab (key N): every one of them is a live switch for a possible
+// difference between a real SpriteRenderer and this copy, so lighting / ordering problems can be tracked down
+// in one playtest instead of one build per idea. The defaults are the intended final behaviour.
 [DisallowMultipleComponent]
 public class SoftSkin : MonoBehaviour
 {
-	// Switched by Fix Lab. false = back to the original (undeformed) drawing.
-	public static bool Active = true;
-
-	// Switched by Fix Lab. true = light probes like the original sprites; false = ignore probes (to test the lighting).
-	public static bool UseProbes = true;
+	// ---- live settings (Look Lab) -------------------------------------------------------------------------
+	public static bool Active = true;        // false = original undeformed sprites
+	public static string Only = "";          // only skin parts whose hierarchy path contains this text ("" = all)
+	public static int ProbeMode;             // 0 copy the sprite's setting, 1 light probes off, 2 blend probes
+	public static int ShadowMode;            // 0 copy the sprite's setting, 1 receive shadows, 2 do not
+	public static bool Unlit;                // draw with the unlit Sprites/Default shader (lighting test)
+	public static bool UseInstance;          // own material copy instead of a property block
+	public static int TintMode;              // 0 _RendererColor, 1 vertex colours, 2 no tint at all
+	public static float Brightness = 1f;     // multiplies the tint (1 = unchanged)
+	public static bool WorldSpace;           // draw un-parented in world space (breaks the sorting group!)
+	public static int SortOffset;            // added to the sorting order
+	public static bool ShowOriginal;         // also draw the original sprite (overlay, to compare)
 
 	public static readonly List<SoftSkin> All = new List<SoftSkin>();
 
+	public static void ResetSettings()
+	{
+		Active = true;
+		Only = "";
+		ProbeMode = 0;
+		ShadowMode = 0;
+		Unlit = false;
+		UseInstance = false;
+		TintMode = 0;
+		Brightness = 1f;
+		WorldSpace = false;
+		SortOffset = 0;
+		ShowOriginal = false;
+	}
+
+	public static string State()
+	{
+		return "skin=" + (Active ? "ON" : "OFF") + " parts=" + (Only.Length == 0 ? "all" : Only)
+			+ " probes=" + new string[] { "copy", "off", "blend" }[ProbeMode]
+			+ " shadows=" + new string[] { "copy", "on", "off" }[ShadowMode]
+			+ " unlit=" + (Unlit ? "yes" : "no") + " carrier=" + (UseInstance ? "material" : "block")
+			+ " tint=" + new string[] { "rendererColor", "vertexColors", "none" }[TintMode]
+			+ " bright=" + Brightness.ToString("0.00") + " space=" + (WorldSpace ? "world" : "child")
+			+ " sort=" + SortOffset + " overlay=" + (ShowOriginal ? "yes" : "no");
+	}
+
+	private static Material unlit;
+	private static bool unlitTried;
+
+	public static bool UnlitAvailable
+	{
+		get { return UnlitMat() != null; }
+	}
+
+	private static Material UnlitMat()
+	{
+		if (!unlitTried)
+		{
+			unlitTried = true;
+			Shader sh = Shader.Find("Sprites/Default");
+			if (sh != null)
+			{
+				unlit = new Material(sh);
+			}
+		}
+		return unlit;
+	}
+
+	// ---- serialized rig data (names must stay as in the original component) ------------------------------
 	[SerializeField] private Transform m_RootBone;
 	[SerializeField] private Transform[] m_BoneTransforms;
 
@@ -41,27 +89,35 @@ public class SoftSkin : MonoBehaviour
 	private bool built;
 	private string status = "not built yet";
 	private string okStatus = "";
+	private string path = "";
 	private GameObject meshGo;
 	private MeshRenderer mr;
 	private MeshFilter mf;
 	private Mesh mesh;
 	private MaterialPropertyBlock block;
+	private Material instMat;
+	private Material lastBase;
+	private bool lastInst;
+	private string colorProp = "_Color";
+	private Color lastTint = new Color(-1f, -1f, -1f, -1f);
+	private int lastTintMode = -1;
+	private bool tintDirty = true;
+	private bool inWorld;
 	private Vector3[] src;
 	private Vector3[] dst;
+	private Color32[] cols;
 	private BoneWeight[] weights;
 	private Matrix4x4[] bind;
 	private Matrix4x4[] palette;
-	private Color shownColor = new Color(-1f, -1f, -1f, -1f);
-	private string colorProp = "_Color";
 
 	public string Status
 	{
 		get { return status; }
 	}
 
-	public int Bones
+	public string Path
 	{
-		get { return m_BoneTransforms != null ? m_BoneTransforms.Length : 0; }
+		get { return path; }
 	}
 
 	public bool Drawing
@@ -74,11 +130,24 @@ public class SoftSkin : MonoBehaviour
 		get { return mr != null && mr.isVisible; }
 	}
 
+	private bool Selected()
+	{
+		return Only.Length == 0 || path.IndexOf(Only, System.StringComparison.OrdinalIgnoreCase) >= 0;
+	}
+
 	private void OnEnable()
 	{
 		sr = GetComponent<SpriteRenderer>();
 		All.Add(this);
 		builtFor = null;
+		string p = name;
+		Transform t = transform.parent;
+		while (t != null)
+		{
+			p = t.name + "/" + p;
+			t = t.parent;
+		}
+		path = p;
 	}
 
 	private void OnDisable()
@@ -92,6 +161,10 @@ public class SoftSkin : MonoBehaviour
 		if (mesh != null)
 		{
 			Destroy(mesh);
+		}
+		if (instMat != null)
+		{
+			Destroy(instMat);
 		}
 		if (meshGo != null)
 		{
@@ -126,13 +199,19 @@ public class SoftSkin : MonoBehaviour
 				return;
 			}
 		}
-		Sprite sp = sr.sprite;
 		if (!Active)
 		{
 			status = "switched off";
 			Hide();
 			return;
 		}
+		if (!Selected())
+		{
+			status = "not selected (drawn as original sprite)";
+			Hide();
+			return;
+		}
+		Sprite sp = sr.sprite;
 		if (sp == null)
 		{
 			status = "no sprite";
@@ -164,30 +243,113 @@ public class SoftSkin : MonoBehaviour
 			return;
 		}
 
-		// keep the copy in sync with the original SpriteRenderer
-		sr.forceRenderingOff = true;
-		mr.enabled = sr.enabled;
-		mr.sortingLayerID = sr.sortingLayerID;
-		mr.sortingOrder = sr.sortingOrder;
-		mr.lightProbeUsage = UseProbes ? sr.lightProbeUsage : LightProbeUsage.Off;
-		mr.reflectionProbeUsage = sr.reflectionProbeUsage;
-		mr.shadowCastingMode = sr.shadowCastingMode;
-		mr.receiveShadows = sr.receiveShadows;
-		if (mr.sharedMaterial != sr.sharedMaterial)
+		if (WorldSpace != inWorld)
 		{
-			mr.sharedMaterial = sr.sharedMaterial;
-			colorProp = (mr.sharedMaterial != null && mr.sharedMaterial.HasProperty("_RendererColor")) ? "_RendererColor" : "_Color";
-			shownColor = new Color(-1f, -1f, -1f, -1f);
-		}
-		Color c = sr.color;
-		if (c != shownColor)
-		{
-			shownColor = c;
-			block.SetColor(colorProp, c);
-			mr.SetPropertyBlock(block);
+			SetSpace(WorldSpace);
 		}
 
+		// material (lit original / unlit test) and how it is carried (property block / own copy)
+		Material baseMat = Unlit ? UnlitMat() : sr.sharedMaterial;
+		if (baseMat == null)
+		{
+			baseMat = sr.sharedMaterial;
+		}
+		if (baseMat != lastBase || UseInstance != lastInst)
+		{
+			ApplyMaterial(baseMat);
+		}
+
+		// tint
+		Color c = TintMode == 2 ? Color.white : sr.color;
+		c.r *= Brightness;
+		c.g *= Brightness;
+		c.b *= Brightness;
+		if (tintDirty || c != lastTint || TintMode != lastTintMode)
+		{
+			tintDirty = false;
+			lastTint = c;
+			lastTintMode = TintMode;
+			Color prop = c;
+			Color32 vertexColor = new Color32(255, 255, 255, 255);
+			if (TintMode == 1)
+			{
+				prop = Color.white;
+				vertexColor = c;
+			}
+			for (int i = 0; i < cols.Length; i++)
+			{
+				cols[i] = vertexColor;
+			}
+			mesh.colors32 = cols;
+			if (UseInstance && instMat != null)
+			{
+				instMat.SetColor(colorProp, prop);
+			}
+			else
+			{
+				block.SetColor(colorProp, prop);
+				mr.SetPropertyBlock(block);
+			}
+		}
+
+		// renderer settings copied from the original sprite (lighting + order)
+		sr.forceRenderingOff = !ShowOriginal;
+		mr.enabled = sr.enabled;
+		mr.sortingLayerID = sr.sortingLayerID;
+		mr.sortingOrder = sr.sortingOrder + SortOffset;
+		mr.lightProbeUsage = ProbeMode == 0 ? sr.lightProbeUsage : (ProbeMode == 1 ? LightProbeUsage.Off : LightProbeUsage.BlendProbes);
+		mr.reflectionProbeUsage = sr.reflectionProbeUsage;
+		mr.shadowCastingMode = sr.shadowCastingMode;
+		mr.receiveShadows = ShadowMode == 0 ? sr.receiveShadows : (ShadowMode == 1);
+
 		Deform();
+	}
+
+	private void SetSpace(bool world)
+	{
+		Transform t = meshGo.transform;
+		t.SetParent(world ? null : transform, false);
+		if (world)
+		{
+			t.position = Vector3.zero;
+			t.rotation = Quaternion.identity;
+			t.localScale = Vector3.one;
+		}
+		else
+		{
+			t.localPosition = Vector3.zero;
+			t.localRotation = Quaternion.identity;
+			t.localScale = Vector3.one;
+		}
+		inWorld = world;
+	}
+
+	private void ApplyMaterial(Material baseMat)
+	{
+		lastBase = baseMat;
+		lastInst = UseInstance;
+		colorProp = (baseMat != null && baseMat.HasProperty("_RendererColor")) ? "_RendererColor" : "_Color";
+		Texture tex = builtFor != null ? builtFor.texture : null;
+		if (instMat != null)
+		{
+			Destroy(instMat);
+			instMat = null;
+		}
+		if (UseInstance && baseMat != null)
+		{
+			instMat = new Material(baseMat);
+			instMat.mainTexture = tex;
+			mr.sharedMaterial = instMat;
+			mr.SetPropertyBlock(null);
+		}
+		else
+		{
+			mr.sharedMaterial = baseMat;
+			block.Clear();
+			block.SetTexture("_MainTex", tex);
+			mr.SetPropertyBlock(block);
+		}
+		tintDirty = true;
 	}
 
 	// ---- skip work for characters that are far outside the camera view ----
@@ -244,6 +406,7 @@ public class SoftSkin : MonoBehaviour
 			int n = verts.Length;
 			src = new Vector3[n];
 			dst = new Vector3[n];
+			cols = new Color32[n];
 			weights = new BoneWeight[n];
 			int boneCount = bindPoses.Length;
 			for (int i = 0; i < n; i++)
@@ -268,11 +431,6 @@ public class SoftSkin : MonoBehaviour
 			{
 				indices[i] = tris[i];
 			}
-			Color32[] white = new Color32[n];
-			for (int i = 0; i < n; i++)
-			{
-				white[i] = new Color32(255, 255, 255, 255);
-			}
 
 			if (meshGo == null)
 			{
@@ -286,18 +444,16 @@ public class SoftSkin : MonoBehaviour
 				mesh.name = "SoftSkin " + name;
 				mesh.MarkDynamic();
 				mf.sharedMesh = mesh;
+				inWorld = false;
 			}
 			mesh.Clear();
 			mesh.vertices = src;
 			mesh.uv = uvs;
-			mesh.colors32 = white;
 			mesh.triangles = indices;
 			mesh.RecalculateBounds();
 
-			block.SetTexture("_MainTex", sp.texture);
-			mr.SetPropertyBlock(block);
-			shownColor = new Color(-1f, -1f, -1f, -1f);
-			mr.sharedMaterial = null; // forces the material sync above to run
+			lastBase = null; // forces the material + texture to be (re)applied
+			tintDirty = true;
 			okStatus = "OK  " + boneCount + " bones, " + n + " vertices";
 			status = okStatus;
 			return true;
@@ -317,6 +473,8 @@ public class SoftSkin : MonoBehaviour
 			Transform b = m_BoneTransforms[i];
 			palette[i] = b != null ? worldToLocal * b.localToWorldMatrix * bind[i] : Matrix4x4.identity;
 		}
+		Matrix4x4 localToWorld = transform.localToWorldMatrix;
+		bool world = inWorld;
 		bool flipX = sr.flipX;
 		bool flipY = sr.flipY;
 		for (int i = 0; i < src.Length; i++)
@@ -340,9 +498,50 @@ public class SoftSkin : MonoBehaviour
 			r.z = 0f;
 			if (flipX) { r.x = -r.x; }
 			if (flipY) { r.y = -r.y; }
-			dst[i] = r;
+			dst[i] = world ? localToWorld.MultiplyPoint3x4(r) : r;
 		}
 		mesh.vertices = dst;
 		mesh.RecalculateBounds();
+	}
+
+	// Everything that could explain a look difference, for the Look Lab report.
+	public string Describe()
+	{
+		StringBuilder sb = new StringBuilder();
+		sb.Append(path).Append("\n    status: ").Append(status).Append('\n');
+		if (sr == null)
+		{
+			return sb.ToString();
+		}
+		Material m = sr.sharedMaterial;
+		sb.Append("    sprite renderer: shader ").Append(m != null && m.shader != null ? m.shader.name : "?")
+			.Append(", material ").Append(m != null ? m.name : "?")
+			.Append(", color ").Append(sr.color.ToString("0.00"))
+			.Append(", probes ").Append(sr.lightProbeUsage).Append(", reflection ").Append(sr.reflectionProbeUsage)
+			.Append(", receiveShadows ").Append(sr.receiveShadows).Append(", castShadows ").Append(sr.shadowCastingMode)
+			.Append(", layer/order ").Append(sr.sortingLayerID).Append('/').Append(sr.sortingOrder).Append('\n');
+		SortingGroup g = sr.GetComponentInParent<SortingGroup>();
+		sb.Append("    sorting group: ").Append(g != null ? g.name + " (order " + g.sortingOrder + ")" : "none").Append('\n');
+		Sprite sp = sr.sprite;
+		if (sp != null)
+		{
+			Texture2D tex = sp.texture;
+			sb.Append("    sprite ").Append(sp.name).Append(", packed ").Append(sp.packed);
+			if (tex != null)
+			{
+				sb.Append(", texture ").Append(tex.name).Append(' ').Append(tex.width).Append('x').Append(tex.height)
+					.Append(' ').Append(tex.format).Append(", filter ").Append(tex.filterMode);
+			}
+			sb.Append('\n');
+		}
+		if (mr != null)
+		{
+			sb.Append("    copy: enabled ").Append(mr.enabled).Append(", visible ").Append(mr.isVisible)
+				.Append(", probes ").Append(mr.lightProbeUsage).Append(", receiveShadows ").Append(mr.receiveShadows)
+				.Append(", layer/order ").Append(mr.sortingLayerID).Append('/').Append(mr.sortingOrder)
+				.Append(", queue ").Append(mr.sharedMaterial != null ? mr.sharedMaterial.renderQueue : -1)
+				.Append(", space ").Append(inWorld ? "world" : "child").Append('\n');
+		}
+		return sb.ToString();
 	}
 }
