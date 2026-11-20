@@ -16,10 +16,9 @@ using UnityEngine.U2D;
 // Unity sprite APIs and draws it through a child MeshRenderer; the original SpriteRenderer is only hidden
 // (forceRenderingOff), never disabled, so animations that change its sprite / colour / sorting keep working.
 //
-// LIGHTING: the sprite material is the LIT built-in "Sprites/Diffuse". Unity draws normal sprites with world-space
-// vertices, so their lighting never depends on the sprite's rotation. To look identical, the copy is drawn the same
-// way: its vertices are written in WORLD space on an un-parented object that sits at the origin with no rotation.
-// (Parenting it under the tilted character made the lights hit it at a different angle = darker parts.)
+// DRAWING: the copy is a child of the sprite's own object (so it lives inside the character's Sorting Group and
+// keeps the same draw order as the original, e.g. the scared face above the head) and copies the renderer's lighting
+// settings (light probes, reflection probes, shadows), because the sprite material is the LIT "Sprites/Diffuse".
 //
 // If anything about a sprite is unexpected (no bones, bone count mismatch), that one sprite is simply drawn the
 // normal way again. Fix Lab (key N) can switch the whole thing on / off while you look at a character.
@@ -28,6 +27,9 @@ public class SoftSkin : MonoBehaviour
 {
 	// Switched by Fix Lab. false = back to the original (undeformed) drawing.
 	public static bool Active = true;
+
+	// Switched by Fix Lab. true = light probes like the original sprites; false = ignore probes (to test the lighting).
+	public static bool UseProbes = true;
 
 	public static readonly List<SoftSkin> All = new List<SoftSkin>();
 
@@ -38,6 +40,7 @@ public class SoftSkin : MonoBehaviour
 	private Sprite builtFor;
 	private bool built;
 	private string status = "not built yet";
+	private string okStatus = "";
 	private GameObject meshGo;
 	private MeshRenderer mr;
 	private MeshFilter mf;
@@ -152,6 +155,7 @@ public class SoftSkin : MonoBehaviour
 			Hide();
 			return;
 		}
+		status = okStatus;
 
 		// far outside the camera: hide the copy (its vertices would be stale) and do no work
 		if (!InView(sr.bounds))
@@ -165,6 +169,10 @@ public class SoftSkin : MonoBehaviour
 		mr.enabled = sr.enabled;
 		mr.sortingLayerID = sr.sortingLayerID;
 		mr.sortingOrder = sr.sortingOrder;
+		mr.lightProbeUsage = UseProbes ? sr.lightProbeUsage : LightProbeUsage.Off;
+		mr.reflectionProbeUsage = sr.reflectionProbeUsage;
+		mr.shadowCastingMode = sr.shadowCastingMode;
+		mr.receiveShadows = sr.receiveShadows;
 		if (mr.sharedMaterial != sr.sharedMaterial)
 		{
 			mr.sharedMaterial = sr.sharedMaterial;
@@ -268,14 +276,11 @@ public class SoftSkin : MonoBehaviour
 
 			if (meshGo == null)
 			{
-				meshGo = new GameObject("SoftSkinMesh " + name); // deliberately NOT a child: stays at world origin, no rotation
+				meshGo = new GameObject("SoftSkinMesh");
 				meshGo.layer = gameObject.layer;
+				meshGo.transform.SetParent(transform, false); // inside the character's Sorting Group, same transform as the sprite
 				mf = meshGo.AddComponent<MeshFilter>();
 				mr = meshGo.AddComponent<MeshRenderer>();
-				mr.shadowCastingMode = ShadowCastingMode.Off;
-				mr.receiveShadows = false;
-				mr.lightProbeUsage = LightProbeUsage.Off;
-				mr.reflectionProbeUsage = ReflectionProbeUsage.Off;
 				block = new MaterialPropertyBlock();
 				mesh = new Mesh();
 				mesh.name = "SoftSkin " + name;
@@ -293,7 +298,8 @@ public class SoftSkin : MonoBehaviour
 			mr.SetPropertyBlock(block);
 			shownColor = new Color(-1f, -1f, -1f, -1f);
 			mr.sharedMaterial = null; // forces the material sync above to run
-			status = "OK  " + boneCount + " bones, " + n + " vertices";
+			okStatus = "OK  " + boneCount + " bones, " + n + " vertices";
+			status = okStatus;
 			return true;
 		}
 		catch (System.Exception e)
@@ -311,7 +317,6 @@ public class SoftSkin : MonoBehaviour
 			Transform b = m_BoneTransforms[i];
 			palette[i] = b != null ? worldToLocal * b.localToWorldMatrix * bind[i] : Matrix4x4.identity;
 		}
-		Matrix4x4 localToWorld = transform.localToWorldMatrix;
 		bool flipX = sr.flipX;
 		bool flipY = sr.flipY;
 		for (int i = 0; i < src.Length; i++)
@@ -335,7 +340,7 @@ public class SoftSkin : MonoBehaviour
 			r.z = 0f;
 			if (flipX) { r.x = -r.x; }
 			if (flipY) { r.y = -r.y; }
-			dst[i] = localToWorld.MultiplyPoint3x4(r); // written in world space, like Unity's own sprites
+			dst[i] = r;
 		}
 		mesh.vertices = dst;
 		mesh.RecalculateBounds();

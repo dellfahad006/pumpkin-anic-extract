@@ -115,7 +115,7 @@ public class FixLab : MonoBehaviour
 		}
 		StringBuilder sb = new StringBuilder();
 		sb.Append("Scene: ").Append(SceneManager.GetActiveScene().name).Append("   Unity ").Append(Application.unityVersion).Append('\n');
-		sb.Append("SoftSkin is ").Append(SoftSkin.Active ? "ON" : "OFF").Append('\n');
+		sb.Append("SoftSkin is ").Append(SoftSkin.Active ? "ON" : "OFF").Append("   light probes ").Append(SoftSkin.UseProbes ? "ON" : "OFF").Append('\n');
 		sb.Append("Skinned sprites active in scene: ").Append(total).Append('\n');
 		sb.Append("  drawn by our skinner: ").Append(drawing).Append('\n');
 		sb.Append("  on screen right now: ").Append(visibleNow).Append('\n');
@@ -149,7 +149,7 @@ public class FixLab : MonoBehaviour
 		float s = Mathf.Max(1f, Screen.height / 700f);
 		GUI.matrix = Matrix4x4.Scale(new Vector3(s, s, 1f));
 		float w = Mathf.Min(430f, Screen.width / s - 20f);
-		float h = Mathf.Min(520f, Screen.height / s - 20f);
+		float h = Mathf.Min(560f, Screen.height / s - 20f);
 		GUILayout.BeginArea(new Rect(10f, 10f, w, h), GUI.skin.box);
 		GUILayout.Label("FIX LAB  (N closes)  -  characters not deforming?");
 
@@ -159,6 +159,11 @@ public class FixLab : MonoBehaviour
 		{
 			SoftSkin.Active = !SoftSkin.Active;
 			reportTimer = 99f;
+		}
+		GUI.backgroundColor = SoftSkin.UseProbes ? new Color(0.4f, 1f, 0.4f) : new Color(1f, 0.8f, 0.4f);
+		if (GUILayout.Button(SoftSkin.UseProbes ? "Light probes on skinned parts: ON (like original sprites)" : "Light probes on skinned parts: OFF (test)", GUILayout.Height(30f)))
+		{
+			SoftSkin.UseProbes = !SoftSkin.UseProbes;
 		}
 		GUI.backgroundColor = old;
 
