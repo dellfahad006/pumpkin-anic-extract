@@ -16,6 +16,11 @@ using UnityEngine.U2D;
 // Unity sprite APIs and draws it through a child MeshRenderer; the original SpriteRenderer is only hidden
 // (forceRenderingOff), never disabled, so animations that change its sprite / colour / sorting keep working.
 //
+// LIGHTING: the sprite material is the LIT built-in "Sprites/Diffuse". Unity draws normal sprites with world-space
+// vertices, so their lighting never depends on the sprite's rotation. To look identical, the copy is drawn the same
+// way: its vertices are written in WORLD space on an un-parented object that sits at the origin with no rotation.
+// (Parenting it under the tilted character made the lights hit it at a different angle = darker parts.)
+//
 // If anything about a sprite is unexpected (no bones, bone count mismatch), that one sprite is simply drawn the
 // normal way again. Fix Lab (key N) can switch the whole thing on / off while you look at a character.
 [DisallowMultipleComponent]
@@ -32,7 +37,6 @@ public class SoftSkin : MonoBehaviour
 	private SpriteRenderer sr;
 	private Sprite builtFor;
 	private bool built;
-	private bool drawnOnce;
 	private string status = "not built yet";
 	private GameObject meshGo;
 	private MeshRenderer mr;
@@ -46,7 +50,6 @@ public class SoftSkin : MonoBehaviour
 	private Matrix4x4[] palette;
 	private Color shownColor = new Color(-1f, -1f, -1f, -1f);
 	private string colorProp = "_Color";
-	private int frame;
 
 	public string Status
 	{
@@ -143,11 +146,17 @@ public class SoftSkin : MonoBehaviour
 		{
 			builtFor = sp;
 			built = Build(sp);
-			drawnOnce = false;
 		}
 		if (!built)
 		{
 			Hide();
+			return;
+		}
+
+		// far outside the camera: hide the copy (its vertices would be stale) and do no work
+		if (!InView(sr.bounds))
+		{
+			mr.enabled = false;
 			return;
 		}
 
@@ -170,14 +179,32 @@ public class SoftSkin : MonoBehaviour
 			mr.SetPropertyBlock(block);
 		}
 
-		// off-screen characters only refresh now and then (saves CPU)
-		frame++;
-		if (drawnOnce && !mr.isVisible && (frame & 15) != 0)
-		{
-			return;
-		}
 		Deform();
-		drawnOnce = true;
+	}
+
+	// ---- skip work for characters that are far outside the camera view ----
+	private static int planesFrame = -1;
+	private static bool havePlanes;
+	private static readonly Plane[] planes = new Plane[6];
+
+	private static bool InView(Bounds b)
+	{
+		if (planesFrame != Time.frameCount)
+		{
+			planesFrame = Time.frameCount;
+			Camera cam = Camera.main;
+			havePlanes = cam != null;
+			if (havePlanes)
+			{
+				GeometryUtility.CalculateFrustumPlanes(cam, planes);
+			}
+		}
+		if (!havePlanes)
+		{
+			return true;
+		}
+		b.Expand(4f);
+		return GeometryUtility.TestPlanesAABB(planes, b);
 	}
 
 	private bool Build(Sprite sp)
@@ -241,9 +268,8 @@ public class SoftSkin : MonoBehaviour
 
 			if (meshGo == null)
 			{
-				meshGo = new GameObject("SoftSkinMesh");
+				meshGo = new GameObject("SoftSkinMesh " + name); // deliberately NOT a child: stays at world origin, no rotation
 				meshGo.layer = gameObject.layer;
-				meshGo.transform.SetParent(transform, false);
 				mf = meshGo.AddComponent<MeshFilter>();
 				mr = meshGo.AddComponent<MeshRenderer>();
 				mr.shadowCastingMode = ShadowCastingMode.Off;
@@ -285,6 +311,7 @@ public class SoftSkin : MonoBehaviour
 			Transform b = m_BoneTransforms[i];
 			palette[i] = b != null ? worldToLocal * b.localToWorldMatrix * bind[i] : Matrix4x4.identity;
 		}
+		Matrix4x4 localToWorld = transform.localToWorldMatrix;
 		bool flipX = sr.flipX;
 		bool flipY = sr.flipY;
 		for (int i = 0; i < src.Length; i++)
@@ -308,7 +335,7 @@ public class SoftSkin : MonoBehaviour
 			r.z = 0f;
 			if (flipX) { r.x = -r.x; }
 			if (flipY) { r.y = -r.y; }
-			dst[i] = r;
+			dst[i] = localToWorld.MultiplyPoint3x4(r); // written in world space, like Unity's own sprites
 		}
 		mesh.vertices = dst;
 		mesh.RecalculateBounds();

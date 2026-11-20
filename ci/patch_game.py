@@ -629,4 +629,66 @@ for scene in ('Nightmare', 'SampleScene'):
         rd[3] = sub_once(rd[3], 'm_SizeDelta: {x: 2091, y: 284}', 'm_SizeDelta: {x: 1441.8477, y: 284}', scene + ' toolbar frame')
         write(path, join_docs(head, docs))
         print(scene + ': toolbar frame drawn at its natural width')
+
+# =====================================================================================
+# 10. Skip-tutorial key: ESC the first time, TAB from then on.
+#     (the hint text is rewritten at runtime by dropdownControls*.cs, so the labels are patched there too)
+# =====================================================================================
+write(S + '/SkipKey.cs', """using UnityEngine;
+
+// First time the tutorial is skipped it takes ESC (so players are nudged to try the tutorial first).
+// Once that has happened, skipping takes TAB (quicker), and the on-screen hint shows the right key.
+public static class SkipKey
+{
+	private const string Pref = "pp_skipKeyLearned";
+
+	public static bool Learned
+	{
+		get { return PlayerPrefs.GetInt(Pref, 0) == 1; }
+	}
+
+	public static string Label
+	{
+		get { return Learned ? "TAB" : "ESC"; }
+	}
+
+	public static bool Pressed()
+	{
+		bool hit = Learned ? Input.GetKeyDown(KeyCode.Tab) : Input.GetKeyDown(KeyCode.Escape);
+		if (hit)
+		{
+			PlayerPrefs.SetInt(Pref, 1);
+			PlayerPrefs.Save();
+		}
+		return hit;
+	}
+}
+""")
+p_ = S + '/wakeUpEvent.cs'
+s_ = read(p_)
+old = 'if (Input.GetButtonDown("Start") ||'
+assert s_.count(old) == 2, 'wakeUpEvent skip checks: %d' % s_.count(old)
+write(p_, s_.replace(old, 'if (SkipKey.Pressed() ||'))
+for fname in ('dropdownControls.cs', 'dropdownControlsNightmare.cs'):
+    p_ = S + '/' + fname
+    s_ = read(p_)
+    s_, n_ = re.subn(r'(textoOpcion0\.text = "[^"\n]*?)\[ESC\]"', r'\1[" + SkipKey.Label + "]"', s_)
+    assert n_ >= 8, fname + ': only %d hint labels patched' % n_
+    write(p_, s_)
+    print(fname + ': %d skip-tutorial hints now follow SkipKey' % n_)
+print('Skip tutorial: ESC first time, TAB afterwards')
+
+# =====================================================================================
+# 11. Deer: trigger range halved (3.5 -> 1.75). The controller re-applies defaultRadius to the sphere every frame,
+#     so this is the value to change (the night radius divides it, so it shrinks at night too).
+# =====================================================================================
+for scene in ('Nightmare', 'SampleScene'):
+    path = A + '/Scenes/%s.unity' % scene
+    text = read(path)
+    text, n_ = re.subn(r'(?m)^(  defaultRadius: )3\.5$', r'\g<1>1.75', text)
+    if scene == 'Nightmare':
+        assert n_ >= 2, 'deer radius fields not found in Nightmare'
+    if n_:
+        write(path, text)
+    print('%s: %d deer trigger radii halved' % (scene, n_))
 print('All patches applied.')
