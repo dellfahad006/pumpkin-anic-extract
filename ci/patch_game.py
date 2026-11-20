@@ -545,6 +545,7 @@ shutil.copy(HERE + '/DevMenu.cs', S + '/DevMenu.cs')
 shutil.copy(HERE + '/FixLab.cs', S + '/FixLab.cs')
 shutil.copy(HERE + '/ToolbarKeyOption.cs', S + '/ToolbarKeyOption.cs')
 shutil.copy(HERE + '/DevMenu.jslib', A + '/Plugins/WebGL/DevMenu.jslib')
+shutil.copy(HERE + '/LookLab.jslib', A + '/Plugins/WebGL/LookLab.jslib')
 shutil.copy(HERE + '/SoftSkin.cs', S + '/SoftSkin.cs')
 shutil.copy(HERE + '/CheatMenu.cs', S + '/CheatMenu.cs')
 # SoftSkin needs a KNOWN script GUID, because section 9 points the scenes at it.

@@ -61,6 +61,11 @@ public class SoftSkin : MonoBehaviour
 	private static Material unlit;
 	private static bool unlitTried;
 
+	public static Material UnlitMaterial
+	{
+		get { return UnlitMat(); }
+	}
+
 	public static bool UnlitAvailable
 	{
 		get { return UnlitMat() != null; }

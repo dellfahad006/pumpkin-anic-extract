@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -33,6 +35,20 @@ public class FixLab : MonoBehaviour
 	private readonly StringBuilder log = new StringBuilder();
 	private string logText = "";
 	private bool brightDirty;
+	private bool showDump;
+	private string dumpText = "";
+
+	// face test
+	private float faceBright = 1f;
+	private bool facesUnlit;
+	private bool faceDirty;
+	private readonly Dictionary<SpriteRenderer, Color> faceColor = new Dictionary<SpriteRenderer, Color>();
+	private readonly Dictionary<SpriteRenderer, Material> faceMaterial = new Dictionary<SpriteRenderer, Material>();
+
+	// lantern light test
+	private Light lantern;
+	private Vector3 lanternHome;
+	private bool lanternSeen;
 
 	[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
 	private static void Create()
@@ -73,6 +89,11 @@ public class FixLab : MonoBehaviour
 				reportTimer = 0f;
 				report = BuildReport();
 				faces = FindFaces();
+				lantern = FindLantern();
+				if (showDump)
+				{
+					dumpText = BuildDump();
+				}
 			}
 		}
 	}
@@ -153,6 +174,58 @@ public class FixLab : MonoBehaviour
 		return sb.ToString();
 	}
 
+	private Light FindLantern()
+	{
+		Light[] all = Resources.FindObjectsOfTypeAll<Light>();
+		Light best = null;
+		for (int i = 0; i < all.Length; i++)
+		{
+			Light l = all[i];
+			if (!l.gameObject.scene.IsValid() || l.transform.root.name.IndexOf("Player", StringComparison.OrdinalIgnoreCase) < 0)
+			{
+				continue;
+			}
+			if (best == null || l.name.IndexOf("Point", StringComparison.OrdinalIgnoreCase) >= 0)
+			{
+				best = l;
+			}
+		}
+		if (best != null && (!lanternSeen || best != lantern))
+		{
+			lanternHome = best.transform.localPosition;
+			lanternSeen = true;
+		}
+		return best;
+	}
+
+	private void ApplyFaces()
+	{
+		if (faces == null)
+		{
+			return;
+		}
+		for (int i = 0; i < faces.childCount; i++)
+		{
+			SpriteRenderer r = faces.GetChild(i).GetComponent<SpriteRenderer>();
+			if (r == null)
+			{
+				continue;
+			}
+			if (!faceColor.ContainsKey(r))
+			{
+				faceColor[r] = r.color;
+				faceMaterial[r] = r.sharedMaterial;
+			}
+			Color o = faceColor[r];
+			r.color = new Color(o.r * faceBright, o.g * faceBright, o.b * faceBright, o.a);
+			Material wanted = facesUnlit && SoftSkin.UnlitMaterial != null ? SoftSkin.UnlitMaterial : faceMaterial[r];
+			if (r.sharedMaterial != wanted)
+			{
+				r.sharedMaterial = wanted;
+			}
+		}
+	}
+
 	private static string DescribeSprite(SpriteRenderer r)
 	{
 		Material m = r.sharedMaterial;
@@ -214,6 +287,12 @@ public class FixLab : MonoBehaviour
 			}
 		}
 
+		if (lantern != null)
+		{
+			sb.Append("Player lantern light: ").Append(lantern.name).Append(" ").Append(lantern.type).Append(", enabled ").Append(lantern.enabled)
+				.Append(", intensity ").Append(lantern.intensity.ToString("0.00")).Append(", range ").Append(lantern.range.ToString("0.0"))
+				.Append(", localPos ").Append(lantern.transform.localPosition.ToString("0.00")).Append(", worldPos ").Append(lantern.transform.position.ToString("0.00")).Append('\n');
+		}
 		Transform f = FindFaces();
 		if (f != null)
 		{
@@ -241,6 +320,16 @@ public class FixLab : MonoBehaviour
 	// ---------------------------------------------------------------------------------------------
 	// drawing
 	// ---------------------------------------------------------------------------------------------
+	private void MoveLantern(float x, float y, float z)
+	{
+		if (lantern == null)
+		{
+			return;
+		}
+		lantern.transform.localPosition += new Vector3(x, y, z);
+		Note("lantern position " + lantern.transform.localPosition.ToString("0.00"));
+	}
+
 	private bool Opt(string label, bool on)
 	{
 		Color old = GUI.backgroundColor;
@@ -394,8 +483,68 @@ public class FixLab : MonoBehaviour
 			GUILayout.Label("(no player faces found in this scene)");
 		}
 
-		// ---- 4 ----
-		Head("4. GAME SPEED");
+		// ---- face test ----
+		Head("4. FACE TEST (the scared face looks dark?)");
+		GUILayout.BeginHorizontal();
+		GUILayout.Label("Face brightness " + faceBright.ToString("0.00"), GUILayout.Width(150f));
+		float nf = GUILayout.HorizontalSlider(faceBright, 0.4f, 3f);
+		if (Mathf.Abs(nf - faceBright) > 0.004f)
+		{
+			faceBright = nf;
+			faceDirty = true;
+			ApplyFaces();
+		}
+		if (GUILayout.Button("1.00", GUILayout.Width(50f)))
+		{
+			faceBright = 1f;
+			ApplyFaces();
+			Note("face brightness 1.00");
+		}
+		GUILayout.EndHorizontal();
+		if (faceDirty && Event.current.type == EventType.MouseUp)
+		{
+			faceDirty = false;
+			Note("face brightness " + faceBright.ToString("0.00"));
+		}
+		GUILayout.BeginHorizontal();
+		if (Opt("Faces lit (original)", !facesUnlit)) { facesUnlit = false; ApplyFaces(); Note("faces = lit"); }
+		if (Opt("Faces unlit", facesUnlit)) { facesUnlit = true; ApplyFaces(); Note("faces = unlit"); }
+		GUILayout.EndHorizontal();
+
+		// ---- lantern ----
+		Head("5. LANTERN LIGHT (lamp looks weird?)");
+		if (lantern == null)
+		{
+			GUILayout.Label("(no player light found in this scene)");
+		}
+		else
+		{
+			GUILayout.Label(lantern.name + ": " + lantern.type + ", intensity " + lantern.intensity.ToString("0.00") + ", range " + lantern.range.ToString("0.0")
+				+ ", pos " + lantern.transform.localPosition.ToString("0.00") + (lantern.enabled ? "" : "  (disabled)"));
+			GUILayout.BeginHorizontal();
+			if (GUILayout.Button("Light ON 1.5", GUILayout.Height(28f))) { lantern.enabled = true; lantern.intensity = 1.5f; Note("lantern intensity 1.5"); }
+			if (GUILayout.Button("Intensity x0.5", GUILayout.Height(28f))) { lantern.intensity *= 0.5f; Note("lantern intensity " + lantern.intensity.ToString("0.00")); }
+			if (GUILayout.Button("Intensity x2", GUILayout.Height(28f))) { lantern.intensity *= 2f; Note("lantern intensity " + lantern.intensity.ToString("0.00")); }
+			GUILayout.EndHorizontal();
+			GUILayout.BeginHorizontal();
+			if (GUILayout.Button("Range x0.7", GUILayout.Height(28f))) { lantern.range *= 0.7f; Note("lantern range " + lantern.range.ToString("0.0")); }
+			if (GUILayout.Button("Range x1.4", GUILayout.Height(28f))) { lantern.range *= 1.4f; Note("lantern range " + lantern.range.ToString("0.0")); }
+			GUILayout.EndHorizontal();
+			GUILayout.BeginHorizontal();
+			if (GUILayout.Button("Move z -0.5", GUILayout.Height(28f))) { MoveLantern(0f, 0f, -0.5f); }
+			if (GUILayout.Button("Move z +0.5", GUILayout.Height(28f))) { MoveLantern(0f, 0f, 0.5f); }
+			if (GUILayout.Button("Up +0.5", GUILayout.Height(28f))) { MoveLantern(0f, 0.5f, 0f); }
+			if (GUILayout.Button("Down -0.5", GUILayout.Height(28f))) { MoveLantern(0f, -0.5f, 0f); }
+			GUILayout.EndHorizontal();
+			if (GUILayout.Button("Put the light back where it was", GUILayout.Height(26f)))
+			{
+				lantern.transform.localPosition = lanternHome;
+				Note("lantern position reset");
+			}
+		}
+
+		// ---- 6 ----
+		Head("6. GAME SPEED");
 		GUILayout.BeginHorizontal();
 		if (GUILayout.Button("Freeze", GUILayout.Height(28f))) { Time.timeScale = 0f; }
 		if (GUILayout.Button("0.25x", GUILayout.Height(28f))) { Time.timeScale = 0.25f; }
@@ -403,7 +552,7 @@ public class FixLab : MonoBehaviour
 		GUILayout.EndHorizontal();
 
 		// ---- 5 ----
-		Head("5. RESULT LOG  (this is what you send me)");
+		Head("7. RESULT LOG  (this is what you send me)");
 		GUILayout.BeginHorizontal();
 		Color old = GUI.backgroundColor;
 		GUI.backgroundColor = new Color(0.4f, 1f, 0.4f);
@@ -421,8 +570,20 @@ public class FixLab : MonoBehaviour
 		GUILayout.BeginHorizontal();
 		if (GUILayout.Button("Copy log + report", GUILayout.Height(30f)))
 		{
-			GUIUtility.systemCopyBuffer = logText + "\n" + BuildDump();
-			Note("(copied to clipboard)");
+			LookLabIO.Copy(logText + "\n" + BuildDump());
+			Note("(copied to clipboard - if pasting does nothing, use Save as file)");
+		}
+		if (GUILayout.Button("Save as file", GUILayout.Height(30f)))
+		{
+			LookLabIO.Download("looklab-log.txt", logText + "\n" + BuildDump());
+			Note("(file looklab-log.txt downloaded)");
+		}
+		GUILayout.EndHorizontal();
+		GUILayout.BeginHorizontal();
+		if (Opt(showDump ? "Report shown below (screenshot it)" : "Show full report on screen", showDump))
+		{
+			showDump = !showDump;
+			dumpText = showDump ? BuildDump() : "";
 		}
 		if (GUILayout.Button("Clear log", GUILayout.Height(30f)))
 		{
@@ -433,6 +594,10 @@ public class FixLab : MonoBehaviour
 		logScroll = GUILayout.BeginScrollView(logScroll, GUILayout.Height(150f));
 		GUILayout.Label(logText, small);
 		GUILayout.EndScrollView();
+		if (showDump)
+		{
+			GUILayout.Label(dumpText, small);
+		}
 
 		GUILayout.EndScrollView();
 		GUILayout.EndArea();
@@ -450,5 +615,35 @@ public class FixLabGui : MonoBehaviour
 		{
 			owner.Draw();
 		}
+	}
+}
+
+// Browser clipboard / file download (WebGL has no GUIUtility.systemCopyBuffer). See LookLab.jslib.
+public static class LookLabIO
+{
+#if UNITY_WEBGL && !UNITY_EDITOR
+	[DllImport("__Internal")]
+	private static extern void LookLab_Copy(string text);
+
+	[DllImport("__Internal")]
+	private static extern void LookLab_Download(string name, string text);
+#endif
+
+	public static void Copy(string text)
+	{
+#if UNITY_WEBGL && !UNITY_EDITOR
+		LookLab_Copy(text);
+#else
+		GUIUtility.systemCopyBuffer = text;
+#endif
+	}
+
+	public static void Download(string name, string text)
+	{
+#if UNITY_WEBGL && !UNITY_EDITOR
+		LookLab_Download(name, text);
+#else
+		GUIUtility.systemCopyBuffer = text;
+#endif
 	}
 }

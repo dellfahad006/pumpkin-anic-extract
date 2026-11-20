@@ -1,3 +1,5 @@
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
@@ -166,34 +168,69 @@ public class CheatMenu : MonoBehaviour
 		message = "Water refilled.";
 	}
 
+	// The game's own goNight() is NOT "night now": it restarts the 480 s sun-dimming clip from the beginning and waits
+	// 470 s. So night / day are driven here by calling the cycle's real steps directly (works for lightCycle and lightCycle_2).
+	private MonoBehaviour FindCycle()
+	{
+		MonoBehaviour c = FindAny<lightCycle>();
+		if (c == null)
+		{
+			c = FindAny<lightCycle_2>();
+		}
+		return c;
+	}
+
+	private static readonly BindingFlags Any = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
 	private void GoNight()
 	{
-		lightCycle l = FindAny<lightCycle>();
-		if (l == null)
+		MonoBehaviour c = FindCycle();
+		if (c == null)
 		{
 			message = "No day/night cycle in this scene.";
 			return;
 		}
-		l.goNight();
-		message = "Night started.";
+		Type t = c.GetType();
+		MethodInfo fade = t.GetMethod("AmbientToNight", Any);
+		FieldInfo sunField = t.GetField("sun", Any);
+		if (fade == null || sunField == null)
+		{
+			message = "Day/night script has no AmbientToNight / sun.";
+			return;
+		}
+		c.StopAllCoroutines();
+		Animator sun = sunField.GetValue(c) as Animator;
+		if (sun != null)
+		{
+			sun.Play("sunGoNight", 0, 0.995f); // jump to the end of the 480 s dimming clip
+		}
+		c.StartCoroutine((IEnumerator)fade.Invoke(c, null)); // ambient fades to night (6 s), sets isNight, starts the night timer
+		message = "Night: sun clip jumped to its end, ambient fading to night.";
 	}
 
 	private void GoDay()
 	{
-		lightCycle l = FindAny<lightCycle>();
-		if (l == null)
+		MonoBehaviour c = FindCycle();
+		if (c == null)
 		{
 			message = "No day/night cycle in this scene.";
 			return;
 		}
-		MethodInfo mi = typeof(lightCycle).GetMethod("goDay", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-		if (mi == null)
+		Type t = c.GetType();
+		MethodInfo day = t.GetMethod("goDay", Any);
+		if (day == null)
 		{
 			message = "goDay not found.";
 			return;
 		}
-		mi.Invoke(l, null);
-		message = "Day started.";
+		c.StopAllCoroutines();
+		FieldInfo nightField = t.GetField("isNight", Any);
+		if (nightField != null)
+		{
+			nightField.SetValue(c, false);
+		}
+		day.Invoke(c, null); // ambient back to day, sun brightens (10 s), then the normal day -> night timer restarts
+		message = "Day: ambient + sun back to day, normal day/night timer restarted.";
 	}
 
 	private Vector3 NearPlayer(float dx)
