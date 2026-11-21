@@ -548,12 +548,13 @@ shutil.copy(HERE + '/DevMenu.jslib', A + '/Plugins/WebGL/DevMenu.jslib')
 shutil.copy(HERE + '/LookLab.jslib', A + '/Plugins/WebGL/LookLab.jslib')
 shutil.copy(HERE + '/SoftSkin.cs', S + '/SoftSkin.cs')
 shutil.copy(HERE + '/CheatMenu.cs', S + '/CheatMenu.cs')
+shutil.copy(HERE + '/ExperimentalMenu.cs', S + '/ExperimentalMenu.cs')
 # SoftSkin needs a KNOWN script GUID, because section 9 points the scenes at it.
 SOFTSKIN_GUID = '7d3b5c1e9a4f4c2d8e6a0b1f3c5d7e91'
 write(S + '/SoftSkin.cs.meta',
       'fileFormatVersion: 2\nguid: ' + SOFTSKIN_GUID + '\nMonoImporter:\n  externalObjects: {}\n  serializedVersion: 2\n'
       '  defaultReferences: []\n  executionOrder: 0\n  icon: {instanceID: 0}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n')
-print('Dev menu installed (press M), Fix Lab (press N), Cheat menu (press L), SoftSkin script installed')
+print('Dev menu installed (press M), Fix Lab (press N), Cheat menu (press L), Experimental menu (press I), SoftSkin script installed')
 # =====================================================================================
 # 8. Toolbar icons: restore the ORIGINAL per-icon x offsets.
 #    An earlier edit reset all eight icon sprites to x = 0 "to centre them", but the original scene gives

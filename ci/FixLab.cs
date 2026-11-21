@@ -42,6 +42,7 @@ public class FixLab : MonoBehaviour
 	private float faceBright = 1f;
 	private bool facesUnlit;
 	private bool faceDirty;
+	private bool cloakDirty;
 	private readonly Dictionary<SpriteRenderer, Color> faceColor = new Dictionary<SpriteRenderer, Color>();
 	private readonly Dictionary<SpriteRenderer, Material> faceMaterial = new Dictionary<SpriteRenderer, Material>();
 
@@ -376,10 +377,13 @@ public class FixLab : MonoBehaviour
 		if (GUILayout.Button("Reset all switches", GUILayout.Height(28f)))
 		{
 			SoftSkin.ResetSettings();
+			faceBright = 1f;
+			facesUnlit = false;
+			ApplyFaces();
 			Note("all switches reset");
 		}
 		GUILayout.EndHorizontal();
-		GUILayout.Label("Only skin these parts (the rest stay normal sprites, so you can compare side by side):");
+		GUILayout.Label("The TEST settings below apply only to these parts. All other parts keep skinning and animating normally with the defaults, so you can compare side by side:");
 		GUILayout.BeginHorizontal();
 		for (int i = 0; i < PartLabels.Length; i++)
 		{
@@ -401,10 +405,10 @@ public class FixLab : MonoBehaviour
 			SoftSkin.Brightness = nb;
 			brightDirty = true;
 		}
-		if (GUILayout.Button("1.00", GUILayout.Width(50f)))
+		if (GUILayout.Button(SoftSkin.DefaultBrightness.ToString("0.00"), GUILayout.Width(50f)))
 		{
-			SoftSkin.Brightness = 1f;
-			Note("brightness 1.00");
+			SoftSkin.Brightness = SoftSkin.DefaultBrightness;
+			Note("brightness " + SoftSkin.DefaultBrightness.ToString("0.00") + " (default)");
 		}
 		GUILayout.EndHorizontal();
 		if (brightDirty && Event.current.type == EventType.MouseUp)
@@ -484,9 +488,28 @@ public class FixLab : MonoBehaviour
 		}
 
 		// ---- face test ----
-		Head("4. FACE TEST (the scared face looks dark?)");
+		Head("4. PLAYER LOOK (cloak + faces, e.g. for night)");
 		GUILayout.BeginHorizontal();
-		GUILayout.Label("Face brightness " + faceBright.ToString("0.00"), GUILayout.Width(150f));
+		GUILayout.Label("Cloak brightness " + SoftSkin.PlayerBrightness.ToString("0.00"), GUILayout.Width(150f));
+		float nc = GUILayout.HorizontalSlider(SoftSkin.PlayerBrightness, 0.4f, 3f);
+		if (Mathf.Abs(nc - SoftSkin.PlayerBrightness) > 0.004f)
+		{
+			SoftSkin.PlayerBrightness = nc;
+			cloakDirty = true;
+		}
+		if (GUILayout.Button("1.00", GUILayout.Width(50f)))
+		{
+			SoftSkin.PlayerBrightness = 1f;
+			Note("cloak brightness 1.00");
+		}
+		GUILayout.EndHorizontal();
+		if (cloakDirty && Event.current.type == EventType.MouseUp)
+		{
+			cloakDirty = false;
+			Note("cloak brightness " + SoftSkin.PlayerBrightness.ToString("0.00"));
+		}
+		GUILayout.BeginHorizontal();
+		GUILayout.Label("Scared-face brightness " + faceBright.ToString("0.00"), GUILayout.Width(200f));
 		float nf = GUILayout.HorizontalSlider(faceBright, 0.4f, 3f);
 		if (Mathf.Abs(nf - faceBright) > 0.004f)
 		{

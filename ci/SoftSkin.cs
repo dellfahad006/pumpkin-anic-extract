@@ -19,13 +19,15 @@ public class SoftSkin : MonoBehaviour
 {
 	// ---- live settings (Look Lab) -------------------------------------------------------------------------
 	public static bool Active = true;        // false = original undeformed sprites
-	public static string Only = "";          // only skin parts whose hierarchy path contains this text ("" = all)
+	public static string Only = "";          // the test settings below apply only to parts whose path contains this text ("" = all); the rest keep skinning with the defaults
 	public static int ProbeMode;             // 0 copy the sprite's setting, 1 light probes off, 2 blend probes
 	public static int ShadowMode;            // 0 copy the sprite's setting, 1 receive shadows, 2 do not
 	public static bool Unlit;                // draw with the unlit Sprites/Default shader (lighting test)
 	public static bool UseInstance;          // own material copy instead of a property block
 	public static int TintMode;              // 0 _RendererColor, 1 vertex colours, 2 no tint at all
-	public static float Brightness = 1f;     // multiplies the tint (1 = unchanged)
+	public const float DefaultBrightness = 1.34f; // the value that matched the original sprites' look in testing
+	public static float Brightness = DefaultBrightness; // multiplies the tint of every skinned part
+	public static float PlayerBrightness = 1f;     // extra multiplier for the player's cloak only (night tuning)
 	public static bool WorldSpace;           // draw un-parented in world space (breaks the sorting group!)
 	public static int SortOffset;            // added to the sorting order
 	public static bool ShowOriginal;         // also draw the original sprite (overlay, to compare)
@@ -41,7 +43,8 @@ public class SoftSkin : MonoBehaviour
 		Unlit = false;
 		UseInstance = false;
 		TintMode = 0;
-		Brightness = 1f;
+		Brightness = DefaultBrightness;
+		PlayerBrightness = 1f;
 		WorldSpace = false;
 		SortOffset = 0;
 		ShowOriginal = false;
@@ -54,7 +57,7 @@ public class SoftSkin : MonoBehaviour
 			+ " shadows=" + new string[] { "copy", "on", "off" }[ShadowMode]
 			+ " unlit=" + (Unlit ? "yes" : "no") + " carrier=" + (UseInstance ? "material" : "block")
 			+ " tint=" + new string[] { "rendererColor", "vertexColors", "none" }[TintMode]
-			+ " bright=" + Brightness.ToString("0.00") + " space=" + (WorldSpace ? "world" : "child")
+			+ " bright=" + Brightness.ToString("0.00") + " cloak=" + PlayerBrightness.ToString("0.00") + " space=" + (WorldSpace ? "world" : "child")
 			+ " sort=" + SortOffset + " overlay=" + (ShowOriginal ? "yes" : "no");
 	}
 
@@ -95,6 +98,7 @@ public class SoftSkin : MonoBehaviour
 	private string status = "not built yet";
 	private string okStatus = "";
 	private string path = "";
+	private bool isPlayer;
 	private GameObject meshGo;
 	private MeshRenderer mr;
 	private MeshFilter mf;
@@ -153,6 +157,7 @@ public class SoftSkin : MonoBehaviour
 			t = t.parent;
 		}
 		path = p;
+		isPlayer = p.StartsWith("Player/", System.StringComparison.Ordinal);
 	}
 
 	private void OnDisable()
@@ -210,12 +215,6 @@ public class SoftSkin : MonoBehaviour
 			Hide();
 			return;
 		}
-		if (!Selected())
-		{
-			status = "not selected (drawn as original sprite)";
-			Hide();
-			return;
-		}
 		Sprite sp = sr.sprite;
 		if (sp == null)
 		{
@@ -248,35 +247,51 @@ public class SoftSkin : MonoBehaviour
 			return;
 		}
 
-		if (WorldSpace != inWorld)
+		// Test settings only apply to the selected parts; every other part keeps skinning with the defaults.
+		bool exp = Selected();
+		int probeMode = exp ? ProbeMode : 0;
+		int shadowMode = exp ? ShadowMode : 0;
+		bool unlitOn = exp && Unlit;
+		bool useInst = exp && UseInstance;
+		int tintMode = exp ? TintMode : 0;
+		float bright = exp ? Brightness : DefaultBrightness;
+		bool world = exp && WorldSpace;
+		int sortOff = exp ? SortOffset : 0;
+		bool overlay = exp && ShowOriginal;
+		if (isPlayer)
 		{
-			SetSpace(WorldSpace);
+			bright *= PlayerBrightness;
+		}
+
+		if (world != inWorld)
+		{
+			SetSpace(world);
 		}
 
 		// material (lit original / unlit test) and how it is carried (property block / own copy)
-		Material baseMat = Unlit ? UnlitMat() : sr.sharedMaterial;
+		Material baseMat = unlitOn ? UnlitMat() : sr.sharedMaterial;
 		if (baseMat == null)
 		{
 			baseMat = sr.sharedMaterial;
 		}
-		if (baseMat != lastBase || UseInstance != lastInst)
+		if (baseMat != lastBase || useInst != lastInst)
 		{
-			ApplyMaterial(baseMat);
+			ApplyMaterial(baseMat, useInst);
 		}
 
 		// tint
-		Color c = TintMode == 2 ? Color.white : sr.color;
-		c.r *= Brightness;
-		c.g *= Brightness;
-		c.b *= Brightness;
-		if (tintDirty || c != lastTint || TintMode != lastTintMode)
+		Color c = tintMode == 2 ? Color.white : sr.color;
+		c.r *= bright;
+		c.g *= bright;
+		c.b *= bright;
+		if (tintDirty || c != lastTint || tintMode != lastTintMode)
 		{
 			tintDirty = false;
 			lastTint = c;
-			lastTintMode = TintMode;
+			lastTintMode = tintMode;
 			Color prop = c;
 			Color32 vertexColor = new Color32(255, 255, 255, 255);
-			if (TintMode == 1)
+			if (tintMode == 1)
 			{
 				prop = Color.white;
 				vertexColor = c;
@@ -286,7 +301,7 @@ public class SoftSkin : MonoBehaviour
 				cols[i] = vertexColor;
 			}
 			mesh.colors32 = cols;
-			if (UseInstance && instMat != null)
+			if (useInst && instMat != null)
 			{
 				instMat.SetColor(colorProp, prop);
 			}
@@ -298,14 +313,14 @@ public class SoftSkin : MonoBehaviour
 		}
 
 		// renderer settings copied from the original sprite (lighting + order)
-		sr.forceRenderingOff = !ShowOriginal;
+		sr.forceRenderingOff = !overlay;
 		mr.enabled = sr.enabled;
 		mr.sortingLayerID = sr.sortingLayerID;
-		mr.sortingOrder = sr.sortingOrder + SortOffset;
-		mr.lightProbeUsage = ProbeMode == 0 ? sr.lightProbeUsage : (ProbeMode == 1 ? LightProbeUsage.Off : LightProbeUsage.BlendProbes);
+		mr.sortingOrder = sr.sortingOrder + sortOff;
+		mr.lightProbeUsage = probeMode == 0 ? sr.lightProbeUsage : (probeMode == 1 ? LightProbeUsage.Off : LightProbeUsage.BlendProbes);
 		mr.reflectionProbeUsage = sr.reflectionProbeUsage;
 		mr.shadowCastingMode = sr.shadowCastingMode;
-		mr.receiveShadows = ShadowMode == 0 ? sr.receiveShadows : (ShadowMode == 1);
+		mr.receiveShadows = shadowMode == 0 ? sr.receiveShadows : (shadowMode == 1);
 
 		Deform();
 	}
@@ -329,10 +344,10 @@ public class SoftSkin : MonoBehaviour
 		inWorld = world;
 	}
 
-	private void ApplyMaterial(Material baseMat)
+	private void ApplyMaterial(Material baseMat, bool inst)
 	{
 		lastBase = baseMat;
-		lastInst = UseInstance;
+		lastInst = inst;
 		colorProp = (baseMat != null && baseMat.HasProperty("_RendererColor")) ? "_RendererColor" : "_Color";
 		Texture tex = builtFor != null ? builtFor.texture : null;
 		if (instMat != null)
@@ -340,7 +355,7 @@ public class SoftSkin : MonoBehaviour
 			Destroy(instMat);
 			instMat = null;
 		}
-		if (UseInstance && baseMat != null)
+		if (inst && baseMat != null)
 		{
 			instMat = new Material(baseMat);
 			instMat.mainTexture = tex;
